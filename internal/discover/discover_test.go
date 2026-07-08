@@ -227,6 +227,124 @@ func TestClassifyDirPackageNonExistentEntry(t *testing.T) {
 	}
 }
 
+// TestClassifyDirPackageMultiEntryFirstMissing: a package.json whose
+// pi.extensions array is ["./src/MISSING.ts", "./src/real.ts"] — the FIRST
+// entry is absent but a LATER entry exists — classifies as a package
+// extension whose EntryFile is the FIRST EXISTING entry (src/real.ts), NOT
+// the missing first one. Pins PRD §7.1 ("≥1 existing entry" / "first existing
+// pi.extensions entry"). This is the regression for Bug 1 (Issue 1): the old
+// code only checked entries[0] and so misclassified this dir as a plain
+// category folder, descending into it and fragmenting the entry into a stray
+// single-file extension.
+func TestClassifyDirPackageMultiEntryFirstMissing(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "mypkg")
+	writePackageJSON(t, dir, `{
+	  "name": "mypkg",
+	  "description": "My package",
+	  "pi": { "extensions": ["./src/MISSING.ts", "./src/real.ts"] }
+	}`)
+	writeFile(t, filepath.Join(dir, "src"), "real.ts", "/** real entry. */\n")
+	// NOTE: ./src/MISSING.ts does NOT exist; ./src/real.ts DOES.
+
+	ext, isExt, descend := classifyDir(root, dir)
+	if !isExt {
+		t.Fatal("isExt=false; want true (first entry missing but a later entry exists)")
+	}
+	if descend {
+		t.Error("descend=true; want false (load-bearing: recognized package is NOT descended)")
+	}
+	if ext == nil {
+		t.Fatal("ext=nil; want non-nil")
+	}
+	if ext.Kind != "package" {
+		t.Errorf("Kind=%q; want package", ext.Kind)
+	}
+	if !strings.HasSuffix(ext.EntryFile, "mypkg/src/real.ts") {
+		t.Errorf("EntryFile=%q; want suffix 'mypkg/src/real.ts' (FIRST EXISTING entry)", ext.EntryFile)
+	}
+	if ext.EntryFile == filepath.Join(dir, "src", "MISSING.ts") {
+		t.Errorf("EntryFile selected the MISSING entry; want the first EXISTING one")
+	}
+	if ext.RelTag != "mypkg" {
+		t.Errorf("RelTag=%q; want mypkg (dir, no .ts strip)", ext.RelTag)
+	}
+	if ext.Name != "mypkg" {
+		t.Errorf("Name=%q; want mypkg (from package.json)", ext.Name)
+	}
+	if ext.Description != "My package" {
+		t.Errorf("Description=%q; want 'My package' (package.json beats JSDoc)", ext.Description)
+	}
+	if !ext.HasPackageJSON {
+		t.Error("HasPackageJSON=false; want true")
+	}
+}
+
+// TestClassifyDirPackageMultiEntryAllMissing: a package.json whose
+// pi.extensions array is ["./a.ts", "./b.ts"] where NEITHER entry exists does
+// NOT qualify as a package (PRD §7.1: "≥1 existing entry") and falls through
+// to cases b/c/d/e — here, plain dir → descend. Extends
+// TestClassifyDirPackageNonExistentEntry to the multi-entry all-missing case;
+// this is the path Bug 3 (P1.M3.T2.S1) will later turn into a check ERROR.
+func TestClassifyDirPackageMultiEntryAllMissing(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "ghostpkg")
+	writePackageJSON(t, dir, `{ "pi": { "extensions": ["./a.ts", "./b.ts"] } }`)
+	// NOTE: neither ./a.ts nor ./b.ts exists; no index.ts/index.js.
+
+	ext, isExt, descend := classifyDir(root, dir)
+	if isExt {
+		t.Error("isExt=true; want false (no declared entry exists → not a package)")
+	}
+	if ext != nil {
+		t.Errorf("ext=%v; want nil (fell through, nothing recognized)", ext)
+	}
+	if !descend {
+		t.Error("descend=false; want true (falls through to plain category dir)")
+	}
+}
+
+// TestWalkClassifiedPackageMultiEntryResolvesAsOne: end-to-end regression for
+// Bug 1 (Issue 1). A package whose pi.extensions first entry is missing but a
+// later entry exists must resolve as exactly ONE extension, tagged with the
+// package dir name ("mypkg"), and MUST NOT fragment into a stray single-file
+// entry like "mypkg/src/real". Drives the real SkipDir recursion rule via
+// walkClassified (the mini-Index), exercising the exact mechanism the old
+// entries[0]-only check broke.
+func TestWalkClassifiedPackageMultiEntryResolvesAsOne(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "mypkg")
+	writePackageJSON(t, dir, `{
+	  "name": "mypkg",
+	  "description": "My package",
+	  "pi": { "extensions": ["./src/MISSING.ts", "./src/real.ts"] }
+	}`)
+	writeFile(t, filepath.Join(dir, "src"), "real.ts", "/** real entry. */\n")
+
+	exts := walkClassified(root)
+	tags := relTags(exts)
+
+	// Exactly ONE extension, tagged with the package dir name (not the entry filename).
+	if len(exts) != 1 {
+		t.Fatalf("len(exts)=%d; want 1 (package must resolve as ONE entry, not fragment). tags=%v",
+			len(exts), tags)
+	}
+	if exts[0].RelTag != "mypkg" {
+		t.Errorf("RelTag=%q; want 'mypkg' (the package dir, not the entry filename)", exts[0].RelTag)
+	}
+	// Guard against the bug's signature: a fragmented stray single-file entry.
+	for _, bad := range []string{"mypkg/src/real", "src/real", "real"} {
+		for _, tag := range tags {
+			if tag == bad {
+				t.Errorf("found fragmented stray tag %q (bug signature); tags=%v", bad, tags)
+			}
+		}
+	}
+	if exts[0].Kind != "package" {
+		t.Errorf("Kind=%q; want package", exts[0].Kind)
+	}
+}
+
 // TestClassifyDirIndexTS: a dir with index.ts (+ an internal helper that must
 // NOT be double-counted) classifies as a dir extension with shouldDescend=false.
 func TestClassifyDirIndexTS(t *testing.T) {

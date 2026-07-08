@@ -136,14 +136,25 @@ func classifyDir(root, path string) (ext *Extension, isExtension, shouldDescend 
 	if hasPkg && perr == nil {
 		entries := toStringSlice(pkg.Pi.Extensions) // S1 — []any → []string, drops non-strings
 		if len(entries) > 0 {
-			entryFile := filepath.Join(path, entries[0])
-			if fileExists(entryFile) { // PRD §7.1: "≥1 existing entry"
+			// PRD §7.1: a package extension is declared by pi.extensions naming
+			// "≥1 existing entry", and entryFile is "the first existing
+			// pi.extensions entry". Iterate ALL declared entries (mirroring
+			// extdir.hasPiExtensions) and capture the first that exists on disk —
+			// an earlier missing entry must NOT disqualify a later present one.
+			var entryFile string
+			for _, entry := range entries {
+				if f := filepath.Join(path, entry); fileExists(f) {
+					entryFile = f
+					break // first existing wins
+				}
+			}
+			if entryFile != "" { // PRD §7.1: "≥1 existing entry"
 				relTag := relTagForDir(root, path)
 				jsdoc := ExtractJSDoc(entryFile) // S2
 				e := BuildExtension(path, entryFile, relTag, "package", pkg, hasPkg, jsdoc)
 				return &e, true, false // shouldDescend=false (load-bearing)
 			}
-			// pi.extensions names a non-existent file → NOT a package; fall through.
+			// no existing entry among ANY declared pi.extensions → fall through to b/c/d/e.
 		}
 	}
 

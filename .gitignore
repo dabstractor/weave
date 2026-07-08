@@ -1,5 +1,8 @@
 /weave
 /dist
+/build
 *.test
 *.out
 .DS_Store
+node_modules/
+.env
