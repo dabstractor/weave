@@ -366,3 +366,37 @@ func TestIndexSkipsGitDir(t *testing.T) {
 		}
 	}
 }
+
+// TestIndexSymlinkedRoot reproduces Bug 4: a symlinked weave_EXTENSIONS_DIR is
+// validated by os.Stat (follows the symlink, passes the IsDir guard) but
+// filepath.WalkDir Lstats the root, sees ModeSymlink, and walks nothing —
+// yielding an empty catalog. The EvalSymlinks resolution in Index fixes this.
+// On macOS /tmp is a symlink to /private/tmp, so this is a real-world trigger.
+func TestIndexSymlinkedRoot(t *testing.T) {
+	realDir := t.TempDir()
+	writeFile(t, realDir, "foo.ts", "/** foo extension. */\nexport default function(){}\n")
+
+	// Create a symlink to the real extensions dir in a separate temp dir.
+	parent := t.TempDir()
+	link := filepath.Join(parent, "link-to-ext")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("symlinks not supported on this platform: %v", err)
+	}
+
+	got, err := Index(link)
+	if err != nil {
+		t.Fatalf("Index(symlink): err=%v; want nil (symlinked root must resolve and walk)", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got)=%d; want 1 (symlinked root must discover foo.ts, not walk nothing). Entries: %v",
+			len(got), relTags(got))
+	}
+	if got[0].RelTag != "foo" {
+		t.Errorf("RelTag=%q; want foo (the .ts suffix is stripped by classifyFile)", got[0].RelTag)
+	}
+	// The resolved Path/EntryFile point at the REAL dir (the symlink target),
+	// not through the symlink — correct for pi -e consumption.
+	if !strings.HasPrefix(got[0].Path, realDir) {
+		t.Errorf("Path=%q; want it under the resolved real dir %q (pi -e loads the real file)", got[0].Path, realDir)
+	}
+}

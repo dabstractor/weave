@@ -41,9 +41,12 @@ import (
 //   - Malformed package.json does NOT abort the walk (classifyDir/classifyFile
 //     ignore ParsePackageJSON's err — lenient; check M4.T2 surfaces it).
 //
-// filepath.WalkDir does NOT follow symlinked directories (stdlib default); a
-// symlink to an extension dir is therefore not discovered. PRD §7.1 does not
-// require following symlinks, and the default avoids cycles.
+// The walk ROOT is symlink-resolved via filepath.EvalSymlinks before walking
+// (Bug 4: a symlinked weave_EXTENSIONS_DIR is otherwise Lstat'd by WalkDir as
+// ModeSymlink and walks nothing). WalkDir still does NOT follow symlinked
+// DIRECTORIES within the tree (the stdlib default, which avoids cycles); only
+// the store root itself is resolved. --path shows the original (possibly
+// symlinked) path because it uses extdir.Find() directly, not Index().
 //
 // An empty extensions dir (no entries anywhere) yields a nil slice and a nil
 // error; callers test with len() (e.g. --list exits 1 "if no extensions found").
@@ -62,6 +65,20 @@ func Index(extensionsDir string) ([]Extension, error) {
 	root, err := filepath.Abs(extensionsDir)
 	if err != nil {
 		return nil, err
+	}
+	// Resolve symlinks on the walk root. filepath.WalkDir Lstats the root and
+	// will not descend a symlinked directory (stdlib default). os.Stat below
+	// follows the symlink and passes the IsDir guard, but WalkDir then sees
+	// ModeSymlink and walks nothing — producing an empty catalog with no error
+	// (Bug 4). EvalSymlinks resolves the chain so WalkDir sees a real directory.
+	// This is a no-op for non-symlinked paths. --path still shows the original
+	// symlink path because it uses extdir.Find() directly, not Index(). The fix
+	// is here (not in findEnv) so TestFindEnvDoesNotResolveSymlinks stays valid
+	// and ALL Find() callers are covered uniformly. If EvalSymlinks fails (e.g.
+	// a broken symlink chain), fall through to os.Stat which will also fail and
+	// propagate the error normally.
+	if resolved, rerr := filepath.EvalSymlinks(root); rerr == nil {
+		root = resolved
 	}
 	info, err := os.Stat(root)
 	if err != nil {
