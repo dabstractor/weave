@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -1373,5 +1375,134 @@ func TestRunCheckUnresolvableExit1(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "weave init") {
 		t.Errorf("stderr=%q; want the one-line fix", errOut.String())
+	}
+}
+
+// --- chooseStore (M4.T4.S1) ---
+
+// mkdirWithExtEntry makes a temp dir that extdir.HasExtensionEntry reports as a
+// store (contains a §7.1 entry at depth): tmp/sub/index.ts. cwd is a PARAMETER
+// to chooseStore, so no t.Chdir is needed (unlike resolveStore which calls
+// os.Getwd). Mirrors skilldozer's mkdirWithSkillMD with index.ts for the
+// extension-kind predicate.
+func mkdirWithExtEntry(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "index.ts"),
+		[]byte("export default function() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile index.ts: %v", err)
+	}
+	return dir
+}
+
+// failIfCalled returns a prompt fn that fails the test if chooseStore invokes it.
+// Enforces the prompt-safety guarantee (PRD §8.2): the non-interactive branches
+// (`haveStore != ""` and `!isTTY`) must NEVER call the prompt fn.
+func failIfCalled(t *testing.T) func(string, string) (string, error) {
+	t.Helper()
+	return func(label, def string) (string, error) {
+		t.Errorf("chooseStore: prompt must not be called (label=%q)", label)
+		return "", nil
+	}
+}
+
+// OUTPUT #1: `init --store /tmp/x` ⇒ /tmp/x; prompt NEVER called.
+func TestChooseStoreExplicitOverrideNoPrompt(t *testing.T) {
+	got, err := chooseStore("/tmp/x", "/any/cwd", true, "/def", failIfCalled(t))
+	if err != nil || got != "/tmp/x" {
+		t.Errorf("chooseStore(/tmp/x,...): got (%q,%v); want (/tmp/x,nil)", got, err)
+	}
+}
+
+// OUTPUT #2: cwd-with-extension + non-TTY ⇒ cwd; prompt NEVER called.
+func TestChooseStoreCwdDetectNonTTY(t *testing.T) {
+	cwd := mkdirWithExtEntry(t)
+	got, err := chooseStore("", cwd, false, "/def", failIfCalled(t))
+	if err != nil || got != cwd {
+		t.Errorf("chooseStore(cwd-with-ext,non-TTY): got (%q,%v); want (%q,nil)", got, err, cwd)
+	}
+}
+
+// OUTPUT #3: cwd-without-extension + non-TTY ⇒ defaultStore; prompt NEVER called.
+func TestChooseStoreNoExtNonTTYUsesDefault(t *testing.T) {
+	got, err := chooseStore("", t.TempDir(), false, "/def", failIfCalled(t))
+	if err != nil || got != "/def" {
+		t.Errorf("chooseStore(empty-cwd,non-TTY): got (%q,%v); want (/def,nil)", got, err)
+	}
+}
+
+// OUTPUT #4: isTTY + prompt "" ⇒ default (cwd-without-ext so default=defaultStore).
+func TestChooseStoreTTYEmptyPromptAcceptsDefault(t *testing.T) {
+	prompt := func(label, def string) (string, error) { return "", nil }
+	got, err := chooseStore("", t.TempDir(), true, "/def", prompt)
+	if err != nil || got != "/def" {
+		t.Errorf("chooseStore(TTY,empty-prompt): got (%q,%v); want (/def,nil)", got, err)
+	}
+}
+
+// OUTPUT #5: isTTY + prompt "/custom" ⇒ /custom (VERBATIM — no Abs in the core).
+func TestChooseStoreTTYTypedPathOverrides(t *testing.T) {
+	prompt := func(label, def string) (string, error) { return "/custom", nil }
+	got, err := chooseStore("", t.TempDir(), true, "/def", prompt)
+	if err != nil || got != "/custom" {
+		t.Errorf("chooseStore(TTY,typed-/custom): got (%q,%v); want (/custom,nil)", got, err)
+	}
+}
+
+// The cwd-auto-detect DEFAULT is cwd even on a TTY; an empty prompt answer
+// accepts that cwd default (not defaultStore). Guards against a bug where
+// HasExtensionEntry is only consulted on the !isTTY branch.
+func TestChooseStoreCwdDetectIsAlsoTheTTYDefault(t *testing.T) {
+	cwd := mkdirWithExtEntry(t)
+	prompt := func(label, def string) (string, error) {
+		if def != cwd {
+			t.Errorf("prompt default=%q; want cwd %q (auto-detect)", def, cwd)
+		}
+		return "", nil // Enter ⇒ accept the cwd default
+	}
+	got, err := chooseStore("", cwd, true, "/def", prompt)
+	if err != nil || got != cwd {
+		t.Errorf("chooseStore(cwd-with-ext,TTY,empty): got (%q,%v); want (%q,nil)", got, err, cwd)
+	}
+}
+
+// A genuine (non-EOF) prompt read error is returned, not swallowed.
+func TestChooseStorePropagatesPromptError(t *testing.T) {
+	wantErr := errors.New("simulated read failure")
+	prompt := func(label, def string) (string, error) { return "", wantErr }
+	got, err := chooseStore("", t.TempDir(), true, "/def", prompt)
+	if err == nil || !errors.Is(err, wantErr) {
+		t.Errorf("chooseStore(prompt-error): got (%q,%v); want error wrapping %v", got, err, wantErr)
+	}
+}
+
+// (Optional, 8th) readPrompt formats "%s [%s]: " and trims; empty/EOF ⇒ def.
+func TestReadPromptFormatsDefAndTrims(t *testing.T) {
+	var out bytes.Buffer
+	r := bufio.NewReader(strings.NewReader("/typed/path\n"))
+	got, err := readPrompt(r, &out, "Where", "/def")
+	if err != nil || got != "/typed/path" {
+		t.Errorf("readPrompt(typed): got (%q,%v); want (/typed/path,nil)", got, err)
+	}
+	if want := "Where [/def]: "; out.String() != want {
+		t.Errorf("readPrompt output=%q; want %q", out.String(), want)
+	}
+	// Empty line ⇒ def.
+	var out2 bytes.Buffer
+	r2 := bufio.NewReader(strings.NewReader("\n"))
+	got2, err := readPrompt(r2, &out2, "Where", "/def")
+	if err != nil || got2 != "/def" {
+		t.Errorf("readPrompt(empty): got (%q,%v); want (/def,nil)", got2, err)
+	}
+	// EOF no text ⇒ def (not an error).
+	var out3 bytes.Buffer
+	r3 := bufio.NewReader(strings.NewReader(""))
+	got3, err := readPrompt(r3, &out3, "Where", "/def")
+	if err != nil || got3 != "/def" {
+		t.Errorf("readPrompt(EOF): got (%q,%v); want (/def,nil)", got3, err)
 	}
 }

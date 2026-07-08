@@ -373,7 +373,7 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Search, validation & init (PRD §6.1 search/check, §9, §8.2, build order step 4)",
-          "status": "Researching",
+          "status": "Ready",
           "description": "Implement --search (substring filter over 6 metadata fields), check (validation report with ERROR/WARN rules), and the weave init first-run setup command (interactive store selection, create+seed+writeconfig).",
           "tasks": [
             {
@@ -457,14 +457,14 @@
               "type": "Task",
               "id": "P1.M4.T4",
               "title": "weave init command (PRD §8.2)",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Implement the first-run setup: interactive/non-interactive store selection, dir creation, example seeding, config writing, and reporting. The bare `weave <tag>` path NEVER reaches here (prompt safety).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T4.S1",
                   "title": "chooseStore + resolveStore (store selection logic)",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T3.S1",
@@ -480,7 +480,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T4.S2",
                   "title": "setupStore + runInit + exampleExtensionTemplate + init dispatch in run()",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M4.T4.S1",

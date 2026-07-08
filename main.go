@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/dabstractor/weave/internal/check"
+	configpkg "github.com/dabstractor/weave/internal/config"
 	"github.com/dabstractor/weave/internal/discover"
 	"github.com/dabstractor/weave/internal/extdir"
 	"github.com/dabstractor/weave/internal/resolve"
@@ -649,4 +651,148 @@ func relTagBase(relTag string) string {
 		return relTag[i+1:]
 	}
 	return relTag
+}
+
+// --- init store selection (M4.T4.S1) ---
+
+// stdinIsTerminal reports whether os.Stdin is an interactive terminal (a
+// character device), used by resolveStore to gate init's interactive prompt
+// (PRD §8.2 "Prompt safety": prompt ONLY on a real TTY). It stats os.Stdin and
+// checks the os.ModeCharDevice bit — the same stdlib heuristic the package-level
+// isTerminal var uses for stdout color gating, but on a DIFFERENT stream.
+//
+// It is a plain FUNCTION, NOT a package var: the contract's test seam is
+// chooseStore's isTTY PARAMETER (injected per-call), not a global override.
+// (Contrast isTerminal, which IS a var because run() has no isTTY parameter.)
+//
+// Known harmless caveat: /dev/null is also a char device, so stdinIsTerminal()
+// reports true for `weave init < /dev/null`, but a read there yields immediate
+// EOF and readPrompt returns the default (never blocks). No golang.org/x/term
+// (the ModeCharDevice heuristic is the established repo pattern).
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// readPrompt prints the prompt (label, with [def] in brackets) to w, reads one
+// line from r, and returns the trimmed answer — or def when the user presses
+// Enter (empty line) or sends EOF on an otherwise-empty line. A genuine read
+// error (non-EOF) is returned. Used by init's interactive prompt (PRD §8.2).
+//
+// bufio.Reader.ReadString('\n') is preferred over bufio.Scanner (Scanner is
+// line-oriented but awkward for a single interactive read; ReadString returns
+// (line, error) where error == io.EOF if no newline precedes end-of-input — and
+// a bare EOF with empty text means "accept default", NOT a hard error, so
+// `weave init < /dev/null` and `echo | weave init` behave like "press Enter").
+func readPrompt(r *bufio.Reader, w io.Writer, label, def string) (string, error) {
+	if def != "" {
+		fmt.Fprintf(w, "%s [%s]: ", label, def)
+	} else {
+		fmt.Fprintf(w, "%s: ", label)
+	}
+	line, err := r.ReadString('\n') // includes the trailing '\n'
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	if s := strings.TrimSpace(line); s != "" {
+		return s, nil
+	}
+	return def, nil // empty Enter OR EOF-with-no-text ⇒ accept default
+}
+
+// chooseStore resolves the store directory for `weave init` (PRD §8.2) via a
+// 4-step decision that is fully independent of os.Stdin/os.Stdout/os.Getwd: the
+// caller injects cwd, isTTY, the default store, and a prompt function, so the
+// logic is unit-testable without a real terminal (the contract FACTORING).
+//
+// Resolution order (first applicable wins):
+//  1. haveStore != "" — the non-interactive override from `init <dir>` or
+//     `--store <dir>`. Returned VERBATIM; the prompt is NEVER called (scripts/CI).
+//  2. auto-detect the default: if cwd already looks like a store (it contains at
+//     least one extension entry at any depth — extdir.HasExtensionEntry, PRD §8.2
+//     "detected extensions in <cwd>"), default = cwd; else default = defaultStore
+//     (the $XDG_DATA_HOME/weave/extensions value from config.DefaultStore).
+//  3. !isTTY and no explicit haveStore — return the auto-detected default with NO
+//     prompt (scripts / CI / pipes). The prompt is NEVER called.
+//  4. isTTY — prompt "Where should weave keep your extensions? [<default>]".
+//     readPrompt makes empty line / EOF ⇒ default; a typed path ⇒ override.
+//
+// The chosen string is returned VERBATIM (it may be relative if the user typed a
+// relative path); resolveStore absolutizes it via filepath.Abs. A non-nil error
+// is returned ONLY on a genuine prompt read failure (a non-EOF error from the
+// prompt fn); empty/EOF is "accept default", never an error.
+//
+// WIRED BY P1.M4.T4.S2's runInit (via resolveStore). Not yet called in run().
+func chooseStore(haveStore, cwd string, isTTY bool, defaultStore string, prompt func(label, def string) (string, error)) (string, error) {
+	// (1) Non-interactive override: `init <dir>` / `--store <dir>`. No prompt.
+	if haveStore != "" {
+		return haveStore, nil
+	}
+	// (2) Auto-detect the default from cwd (PRD §8.2 "detected extensions in <cwd>").
+	def := defaultStore
+	if extdir.HasExtensionEntry(cwd) {
+		def = cwd
+	}
+	// (3) Off-TTY (pipe/file/CI): use the default, NO prompt (never blocks).
+	if !isTTY {
+		return def, nil
+	}
+	// (4) Interactive: prompt. Empty/EOF answer ⇒ def (the auto-detected default);
+	// a typed path ⇒ override (returned verbatim). A genuine read error propagates.
+	choice, err := prompt("Where should weave keep your extensions?", def)
+	if err != nil {
+		return "", err
+	}
+	if choice == "" {
+		return def, nil
+	}
+	return choice, nil
+}
+
+// resolveStore is the I/O-bearing wrapper around chooseStore that run()'s init
+// dispatch (P1.M4.T4.S2) calls. It supplies the real dependencies — os.Getwd(),
+// configpkg.DefaultStore(), the os.Stdin TTY check (stdinIsTerminal), and a bufio
+// prompt reader over os.Stdin/os.Stderr (readPrompt) — and returns chooseStore's
+// choice ABSOLUTIZED via filepath.Abs (PRD §8.2 "absolute store path"). The ONE
+// shared bufio.NewReader is created here and captured by the prompt closure so a
+// future second prompt would reuse it (a fresh reader per prompt can swallow
+// buffered bytes).
+//
+// The os.Stdin / os.Getwd access is confined to THIS function so the pure
+// decision logic in chooseStore stays terminal-free and unit-testable. The prompt
+// is written to STDERR (not stdout) so init's stdout stays the bare store path —
+// a caller doing store="$(weave init)" must not capture the interactive prompt
+// line (PRD §6.1/§6.4 spirit). A genuine cwd/default/absolutize/prompt error is
+// returned wrapped; an empty or EOF prompt answer is NOT an error (readPrompt ⇒
+// default).
+//
+// WIRED BY P1.M4.T4.S2's runInit. Not yet called in run().
+func resolveStore(haveStore string) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("weave init: resolve cwd: %w", err)
+	}
+	def, err := configpkg.DefaultStore()
+	if err != nil {
+		return "", fmt.Errorf("weave init: resolve default store: %w", err)
+	}
+	r := bufio.NewReader(os.Stdin)
+	// Prompt dialog goes to STDERR, not stdout, so it never pollutes a
+	// store="$(weave init)" capture. readPrompt takes a generic io.Writer so the
+	// choice is made HERE in the wrapper, not baked into the pure readPrompt.
+	prompt := func(label, def string) (string, error) {
+		return readPrompt(r, os.Stderr, label, def)
+	}
+	store, err := chooseStore(haveStore, cwd, stdinIsTerminal(), def, prompt)
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(store)
+	if err != nil {
+		return "", fmt.Errorf("weave init: absolutize store: %w", err)
+	}
+	return abs, nil
 }
