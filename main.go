@@ -16,10 +16,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/dabstractor/weave/internal/discover"
 	"github.com/dabstractor/weave/internal/extdir"
+	"github.com/dabstractor/weave/internal/resolve"
 	"github.com/dabstractor/weave/internal/ui"
 )
 
@@ -418,9 +420,127 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// 4) All other parsed modes are no-ops for now. M3 adds <tag>/--file/--all,
-	//    M4 adds --search/check/init, M5 adds --help/exclusivity/unknown-flag-2
-	//    and the no-args→usage path. The parser is ALREADY complete; later
-	//    milestones add dispatch branches HERE only.
+	// 4) --all / -a (PRD §6.1). Print every extension's path, one per line,
+	//    SORTED by canonical tag (discover.Index already sorts []Extension by
+	//    RelTag, so this just walks the index in order). Exit 0 even for an EMPTY
+	//    store (PRD §6.1 `--all` is ALWAYS exit 0, UNLIKE --list which exits 1 "if
+	//    no extensions found" — --all is a scripting command where empty output +
+	//    exit 0 is the useful shape). The --file/--relative modifiers apply here
+	//    too (PRD §6.2 header: "combine with tag resolution or --all"), via the
+	//    shared extensionPath() helper. This branch does NOT consult --list's
+	//    "empty ⇒ exit 1" check.
+	if c.all {
+		dir, _, err := extdir.Find() // src (2nd return) DISCARDED: only --path prints it
+		if err != nil {
+			fmt.Fprintln(stderr, err) // ErrNotFound.Error() verbatim + newline (PRD §6.4/§8)
+			return 1
+		}
+		exts, err := discover.Index(dir)
+		if err != nil {
+			fmt.Fprintln(stderr, err) // e.g. dir vanished between Find and Index
+			return 1
+		}
+		for _, e := range exts {
+			fmt.Fprintln(stdout, extensionPath(e, dir, c)) // absolute path by default; --file/--relative apply
+		}
+		return 0
+	}
+
+	// 5) Tag-resolution mode: `weave <tag> [<tag>...]` (PRD §6.1). Resolves each
+	//    tag to its extension path and prints one path per line, in INPUT order.
+	//
+	//    ATOMICITY (PRD §6.4 — the critical-for-$(...) contract): resolve EVERY
+	//    tag first, buffering the resulting paths; if ANY tag fails
+	//    (unknown/ambiguous), print one error line per problem tag to stderr,
+	//    print NOTHING to stdout, and exit 1. The buffered paths are flushed ONLY
+	//    when the whole invocation is known-good. This makes `pi -e "$(weave bad)"`
+	//    fail loudly (empty $(...), exit 1) instead of passing a partial or garbage
+	//    path. Each error is printed verbatim from resolve's typed errors —
+	//    *UnknownError names the tag, *AmbiguousError lists the candidate full tags
+	//    (NO "weave:" prefix, matching the extdir.ErrNotFound convention used by
+	//    --path/--list). The default output is ext.Path (the resolvable path:
+	//    file/dir/package); --file swaps to ext.EntryFile and --relative makes it
+	//    relative to the extensions dir (applied by extensionPath, PRD §6.2).
+	if len(c.tags) > 0 {
+		dir, _, err := extdir.Find() // src DISCARDED: tag mode does NOT print "(found via ...)"
+		if err != nil {
+			fmt.Fprintln(stderr, err) // one-line fix verbatim (PRD §6.4/§8); stdout stays empty
+			return 1
+		}
+		exts, err := discover.Index(dir)
+		if err != nil {
+			fmt.Fprintln(stderr, err) // e.g. dir vanished between Find and Index
+			return 1
+		}
+		paths := make([]string, 0, len(c.tags)) // buffered; flushed ONLY if all resolve
+		hadErr := false
+		for _, tag := range c.tags {
+			res, rerr := resolve.Resolve(tag, exts)
+			if rerr != nil {
+				fmt.Fprintln(stderr, rerr) // one error line per problem tag (verbatim; NO "weave:" prefix)
+				hadErr = true
+				continue
+			}
+			// extensionPath applies --file (EntryFile vs Path) and --relative (Rel to
+			// extensions dir); default is the absolute resolvable path (PRD §6.1/§6.2).
+			paths = append(paths, extensionPath(res.Extension, dir, c))
+		}
+		if hadErr {
+			return 1 // paths buffered but NEVER written → stdout empty (§6.4)
+		}
+		for _, p := range paths {
+			fmt.Fprintln(stdout, p) // one path per line, input order (NOT sorted)
+		}
+		return 0
+	}
+
+	// 6) All other parsed modes are no-ops for now. M4 adds --search/check/init,
+	//    M5 adds --help/exclusivity/unknown-flag-2 and the no-args→usage path. The
+	//    parser is ALREADY complete; later milestones add dispatch branches HERE only.
 	return 0
+}
+
+// extensionPath returns the path to print for a resolved extension, applying the
+// PRD §6.2 --file and --relative modifiers. It is the shared formatter used by
+// BOTH the <tag>-resolution loop and the --all loop, so the modifiers behave
+// identically in the two modes (PRD §6.2 header: "combine with tag resolution
+// or --all").
+//
+// Precedence of effects:
+//   - default (neither flag): ext.Path — the ABSOLUTE resolvable path (the file
+//     for single-file extensions, the directory for dir/package extensions).
+//     PRD §6.1.
+//   - --file:                 ext.EntryFile — the ABSOLUTE .ts/.js file pi loads
+//     (the file itself for single-file, index.ts for dir, the first
+//     pi.extensions entry for package). PRD §6.2.
+//   - --relative:             the chosen path rewritten to be RELATIVE to the
+//     extensions dir (PRD §6.2 "machine-local convenience").
+//   - --file --relative:      they COMBINE — an entry-file path relative to the
+//     extensions dir (e.g. "writing/reddit-poster" or "git-checkpoint/index.ts").
+//
+// Kind-independence (load-bearing): extensionPath does NOT switch on ext.Kind.
+// ext.Path and ext.EntryFile are ALREADY populated per Kind by discover.Index
+// (file → Path==EntryFile==the file; dir → Path is the dir, EntryFile is
+// dir+"/index.ts"; package → Path is the dir, EntryFile is the first existing
+// pi.extensions entry). Reading whichever field the flags select is the ENTIRE
+// logic; adding a `switch ext.Kind` is an anti-pattern.
+//
+// filepath.Rel cannot fail in practice here: both arguments are ABSOLUTE
+// (ext.Path/ext.EntryFile are set absolute by discover.Index; extensionsDir is
+// absolute from extdir.Find), and ext.Path/ext.EntryFile are always UNDER
+// extensionsDir (they were discovered by walking it), so a clean relative path
+// always exists. The err guard is defensive only: on a (theoretical) Rel failure
+// weave falls back to the absolute path, which is still a correct, usable answer
+// rather than crashing.
+func extensionPath(ext discover.Extension, extensionsDir string, c config) string {
+	p := ext.Path // default: absolute resolvable path (PRD §6.1/§6.2)
+	if c.file {
+		p = ext.EntryFile // --file: the .ts/.js entry file pi loads (PRD §6.2)
+	}
+	if c.relative {
+		if rel, err := filepath.Rel(extensionsDir, p); err == nil {
+			p = rel // --relative: path relative to the extensions dir
+		}
+	}
+	return p
 }

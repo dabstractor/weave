@@ -50,6 +50,11 @@ func writeExtTree(t *testing.T, layout map[string]string) string {
 	for tag, desc := range layout {
 		content := "/** " + desc + " */\nexport default function() {}\n"
 		path := filepath.Join(root, filepath.FromSlash(tag)+".ts")
+		// MkdirAll the parent so a nested tag (e.g. "writing/reddit-poster")
+		// creates its category dir; os.WriteFile alone fails on a missing parent.
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir parent of %s: %v", path, err)
+		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatalf("write %s: %v", path, err)
 		}
@@ -540,28 +545,10 @@ func TestRunVersionPrecedenceOverPath(t *testing.T) {
 
 // --- run: no-op modes (this milestone) ---
 
-// A parsed mode that is NOT yet dispatched (e.g. --all, <tag>) is a no-op in
-// this milestone: exit 0, no output. M3/M4/M5 add the dispatch branches. This
-// pins the "parser complete, dispatch trimmed" contract so a later milestone
-// that accidentally changes the no-op shape is caught. (Note: --list WAS a
-// no-op here until M2.T5.S1, which added its dispatch branch — so --list is no
-// longer tested here; --all, still undispatched until M3.T2.S1, takes its place.)
-func TestRunUndispatchedAllIsNoOp(t *testing.T) {
-	var out, errOut bytes.Buffer
-	code := run([]string{"--all"}, &out, &errOut)
-	if code != 0 {
-		t.Errorf("run(--all): code=%d; want 0 (no-op until M3.T2.S1)", code)
-	}
-	if out.Len() != 0 {
-		t.Errorf("run(--all) stdout=%q; want empty (no-op)", out.String())
-	}
-	if errOut.Len() != 0 {
-		t.Errorf("run(--all) stderr=%q; want empty (no-op)", errOut.String())
-	}
-}
-
-// No args at all is also a no-op in this milestone (the no-args → usage → exit 1
-// path lands in M5.T1.S1). A bare `weave` currently exits 0.
+// No args at all is still a no-op in this milestone (the no-args → usage → exit 1
+// path lands in M5.T1.S1). A bare `weave` currently exits 0. (M3.T2.S1 dispatched
+// --all and <tag>, so those are no longer no-ops — they have dedicated test
+// blocks below; only truly-unrecognized argv still falls through to return 0.)
 func TestRunNoArgsIsNoOp(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := run(nil, &out, &errOut)
@@ -690,5 +677,498 @@ func TestRunListColorWhenTTY(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "\x1b[1m") || !strings.Contains(got, "\x1b[36m") || !strings.Contains(got, "\x1b[0m") {
 		t.Errorf("TTY output should contain ANSI bold/cyan/reset:\n%s", got)
+	}
+}
+
+// --- run: <tag> resolution (M3.T2.S1) ---
+
+// sampleStore builds a store with a top-level `example` and a nested
+// `writing/reddit-poster`, returning the extensions dir. Both are single-file
+// .ts extensions (weave's layout — NOT <tag>/SKILL.md dirs as in skilldozer),
+// so the default output is the FILE path (.../example.ts, .../writing/reddit-poster.ts).
+// `reddit-poster` resolves by BASENAME (the final '/'-component of its RelTag).
+func sampleStore(t *testing.T) string {
+	t.Helper()
+	return writeExtTree(t, map[string]string{
+		"example":              "A demo extension.",
+		"writing/reddit-poster": "Posts to reddit.",
+	})
+}
+
+// writeDirExt writes a DIR extension: <tag>/index.ts with a leading JSDoc
+// description. discover.classifyDir recognizes a dir with index.ts as Kind="dir";
+// its Path is the DIR, EntryFile is dir+"/index.ts". This is the kind
+// writeExtTree CANNOT build (it only writes single-file .ts extensions).
+func writeDirExt(t *testing.T, root, tag, desc string) string {
+	t.Helper()
+	dir := filepath.Join(root, filepath.FromSlash(tag))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	content := "/** " + desc + " */\nexport default function() {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "index.ts"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write index.ts: %v", err)
+	}
+	return dir
+}
+
+// writePkgExt writes a PACKAGE extension: <tag>/package.json with a pi.extensions
+// array naming ./src/index.ts, plus <tag>/src/index.ts with a JSDoc description.
+// discover.classifyDir recognizes this as Kind="package"; its Path is the DIR,
+// EntryFile is the FIRST pi.extensions entry (src/index.ts). This is the kind
+// writeExtTree CANNOT build (single-file only).
+func writePkgExt(t *testing.T, root, tag, desc string) string {
+	t.Helper()
+	pkgDir := filepath.Join(root, filepath.FromSlash(tag))
+	if err := os.MkdirAll(filepath.Join(pkgDir, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir %s/src: %v", pkgDir, err)
+	}
+	pkgJSON := `{"name": "` + filepath.Base(tag) + `", "pi": {"extensions": ["./src/index.ts"]}}`
+	if err := os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(pkgJSON), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	content := "/** " + desc + " */\nexport default function() {}\n"
+	if err := os.WriteFile(filepath.Join(pkgDir, "src", "index.ts"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write src/index.ts: %v", err)
+	}
+	return pkgDir
+}
+
+// Single tag resolves to its absolute .ts FILE path on stdout, exit 0, no stderr.
+// weave's default output is the FILE path (single-file kind: Path==EntryFile==the
+// .ts file), NOT a directory as in skilldozer.
+func TestRunTagSingleResolvesToPath(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"example"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(example): code=%d; want 0", code)
+	}
+	want := filepath.Join(dir, "example.ts") + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("run(example) stdout=%q; want %q (absolute .ts file path + newline)", got, want)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("run(example) stderr=%q; want empty", errOut.String())
+	}
+}
+
+// Multiple tags -> one path per line, in INPUT order (not sorted), exit 0.
+// `reddit-poster` resolves by basename to writing/reddit-poster; `example` by
+// canonical tag.
+func TestRunTagMultipleInInputOrder(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"reddit-poster", "example"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(reddit-poster example): code=%d; want 0", code)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 paths; got %d: %q", len(lines), out.String())
+	}
+	if lines[0] != filepath.Join(dir, "writing", "reddit-poster.ts") {
+		t.Errorf("lines[0]=%q; want the reddit-poster .ts (input order preserved)", lines[0])
+	}
+	if lines[1] != filepath.Join(dir, "example.ts") {
+		t.Errorf("lines[1]=%q; want the example .ts (input order preserved)", lines[1])
+	}
+}
+
+// ATOMICITY (§6.4): one unknown tag among resolvable ones -> NOTHING on stdout,
+// one stderr line per problem tag, exit 1. The resolvable tag must NOT leak to
+// stdout (buffered paths are discarded on any failure).
+func TestRunTagAtomicityUnknownPrintsNothing(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"example", "nope"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(example nope): code=%d; want 1 (atomic failure)", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY (§6.4: nothing printed on failure)", out.String())
+	}
+	if !strings.Contains(errOut.String(), "nope") {
+		t.Errorf("stderr=%q; want an error line naming 'nope'", errOut.String())
+	}
+}
+
+// All tags fail -> one stderr line per problem tag, nothing on stdout, exit 1.
+func TestRunTagAllFailMultipleErrorLines(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"nope1", "nope2"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(nope1 nope2): code=%d; want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	errLines := strings.Split(strings.TrimRight(errOut.String(), "\n"), "\n")
+	if len(errLines) != 2 {
+		t.Fatalf("want 2 stderr lines (one per problem tag); got %d: %q", len(errLines), errOut.String())
+	}
+}
+
+// A tag repeated in argv resolves each time; output repeats. Not an error.
+func TestRunTagDuplicateArgResolvesTwice(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"example", "example"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(example example): code=%d; want 0", code)
+	}
+	want := strings.Repeat(filepath.Join(dir, "example.ts")+"\n", 2)
+	if got := out.String(); got != want {
+		t.Errorf("stdout=%q; want two identical path lines:\n%s", got, want)
+	}
+}
+
+// Ambiguous tag (basename collision) -> stderr lists the candidate full tags,
+// NOTHING on stdout, exit 1 (PRD §6.4). The candidates come from resolve's
+// *AmbiguousError verbatim (NO "weave:" prefix).
+func TestRunTagAmbiguousListsCandidates(t *testing.T) {
+	dir := writeExtTree(t, map[string]string{
+		"writing/reddit": "d",
+		"coding/reddit":  "d",
+	})
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"reddit"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(reddit) ambiguous: code=%d; want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY (ambiguous => nothing on stdout)", out.String())
+	}
+	msg := errOut.String()
+	for _, want := range []string{"reddit", "coding/reddit", "writing/reddit"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("stderr=%q; missing candidate %q", msg, want)
+		}
+	}
+}
+
+// Extensions dir unresolvable + tags -> exit 1, nothing on stdout, the one-line
+// fix on stderr (same contract as --path/--list).
+func TestRunTagUnresolvable(t *testing.T) {
+	unsetExtEnv(t)
+	t.Chdir(t.TempDir()) // all §8.3 rules miss
+	var out, errOut bytes.Buffer
+	code := run([]string{"example"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(example) unresolvable: code=%d; want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	if !strings.Contains(errOut.String(), "weave init") {
+		t.Errorf("stderr=%q; want the one-line fix", errOut.String())
+	}
+}
+
+// The resolved path is ABSOLUTE (PRD §6.1 default; --relative is tested below).
+func TestRunTagPathIsAbsolute(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"example"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(example): code=%d; want 0", code)
+	}
+	if p := strings.TrimRight(out.String(), "\n"); !filepath.IsAbs(p) {
+		t.Errorf("resolved path %q is not absolute (discover.Extension.Path should be absolute)", p)
+	}
+}
+
+// --version precedes tag-resolution mode even when a tag is present (PRD §6.3).
+func TestRunVersionPrecedenceOverTag(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"example", "--version"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(example --version): code=%d; want 0 (version precedence)", code)
+	}
+	if got := out.String(); got != "weave "+version+"\n" {
+		t.Errorf("stdout=%q; want the version line (precedence over tag mode)", got)
+	}
+}
+
+// --- run: <tag> + --file/--relative modifiers (M3.T2.S1) ---
+
+// --file on a SINGLE-FILE extension is a NO-OP: EntryFile == Path (both the .ts
+// file), so the output is the SAME path as the default. This is the OPPOSITE of
+// skilldozer, where --file appended /SKILL.md. PRD §6.2: for file-kind
+// extensions --file prints the entry file, which IS the file itself.
+func TestRunTagFileOnSingleFileIsNoOp(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-f", "example"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(-f example): code=%d; want 0", code)
+	}
+	// EntryFile == Path for single-file kind → the SAME .ts path as the default.
+	want := filepath.Join(dir, "example.ts") + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("run(-f example) stdout=%q; want %q (--file on a single-file ext is a no-op: EntryFile==Path)", got, want)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("run(-f example) stderr=%q; want empty", errOut.String())
+	}
+}
+
+// --file on a DIR extension prints the dir's index.ts (PRD §6.2). This is one of
+// the TWO weave-specific cases skilldozer could not exercise (its SourceFile was
+// always Dir+"/SKILL.md"). Here Path is the dir, EntryFile is dir+"/index.ts".
+func TestRunTagFileOnDirExtPrintsIndexTS(t *testing.T) {
+	root := t.TempDir()
+	writeDirExt(t, root, "git-checkpoint", "Git checkpoint extension.")
+	t.Setenv("weave_EXTENSIONS_DIR", root)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-f", "git-checkpoint"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(-f git-checkpoint): code=%d; want 0", code)
+	}
+	want := filepath.Join(root, "git-checkpoint", "index.ts") + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("run(-f git-checkpoint) stdout=%q; want %q (--file on a dir ext → index.ts)", got, want)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("run(-f git-checkpoint) stderr=%q; want empty", errOut.String())
+	}
+}
+
+// --file on a PACKAGE extension prints the FIRST pi.extensions entry (PRD §6.2).
+// This is the second weave-specific case skilldozer could not exercise. Here
+// Path is the package dir, EntryFile is the first existing pi.extensions entry
+// (./src/index.ts).
+func TestRunTagFileOnPkgExtPrintsPiExtensionsEntry(t *testing.T) {
+	root := t.TempDir()
+	writePkgExt(t, root, "summarizer", "Summarizes things.")
+	t.Setenv("weave_EXTENSIONS_DIR", root)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-f", "summarizer"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(-f summarizer): code=%d; want 0", code)
+	}
+	want := filepath.Join(root, "summarizer", "src", "index.ts") + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("run(-f summarizer) stdout=%q; want %q (--file on a package ext → first pi.extensions entry)", got, want)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("run(-f summarizer) stderr=%q; want empty", errOut.String())
+	}
+}
+
+// --relative prints the .ts file path RELATIVE to the extensions dir (PRD §6.2).
+// The output uses the OS path separator (filepath.Rel), so compare via FromSlash.
+func TestRunTagRelativePrintsRelativePath(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--relative", "reddit-poster"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--relative reddit-poster): code=%d; want 0", code)
+	}
+	want := filepath.FromSlash("writing/reddit-poster.ts") + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("run(--relative reddit-poster) stdout=%q; want %q (relative .ts path)", got, want)
+	}
+}
+
+// --file --relative COMBINE: an entry-file path RELATIVE to the extensions dir
+// (PRD §6.2). On a single-file ext EntryFile==Path, so this matches --relative
+// alone here; the COMBINE is exercised by the dir/package --file tests' relative
+// counterparts implicitly (EntryFile differs from Path there).
+func TestRunTagFileRelativeCombine(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-f", "--relative", "reddit-poster"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(-f --relative reddit-poster): code=%d; want 0", code)
+	}
+	want := filepath.FromSlash("writing/reddit-poster.ts") + "\n"
+	if got := out.String(); got != want {
+		t.Errorf("run(-f --relative reddit-poster) stdout=%q; want %q (relative entry file)", got, want)
+	}
+}
+
+// Modifiers must NOT break §6.4 atomicity: one bad tag -> NOTHING on stdout, exit 1.
+func TestRunTagFileAtomicity(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-f", "example", "nope"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(-f example nope): code=%d; want 1 (atomic failure)", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY (modifiers must not break §6.4)", out.String())
+	}
+}
+
+// --- run: --all/-a (M3.T2.S1) ---
+
+// --all prints every extension's absolute .ts FILE path, one per line, SORTED by
+// canonical tag (discover.Index already sorts []Extension by RelTag). exit 0.
+func TestRunAllPrintsAllSorted(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--all"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--all): code=%d; want 0", code)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 paths; got %d: %q", len(lines), out.String())
+	}
+	// Sorted by RelTag: "example" < "writing/reddit-poster".
+	if lines[0] != filepath.Join(dir, "example.ts") {
+		t.Errorf("lines[0]=%q; want example.ts (sorted)", lines[0])
+	}
+	if lines[1] != filepath.Join(dir, "writing", "reddit-poster.ts") {
+		t.Errorf("lines[1]=%q; want writing/reddit-poster.ts (sorted)", lines[1])
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("run(--all) stderr=%q; want empty", errOut.String())
+	}
+}
+
+// -a short form behaves identically to --all.
+func TestRunAllShortFlag(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-a"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(-a): code=%d; want 0", code)
+	}
+	if !strings.Contains(out.String(), filepath.Join(dir, "example.ts")) {
+		t.Errorf("run(-a) stdout missing example.ts:\n%s", out.String())
+	}
+}
+
+// --all --file on a MIXED store (single-file + dir ext): --all prints ext.Path
+// (the file for the single-file ext, the dir for the dir ext); --all --file
+// prints ext.EntryFile (the file for the single-file ext, index.ts for the dir
+// ext). They DIFFER on the dir ext, so this is a MEANINGFUL coverage of the
+// --file modifier across Kinds (not a tautological no-op assertion).
+func TestRunAllFilePrintsAllEntryFiles(t *testing.T) {
+	root := t.TempDir()
+	// A single-file ext: example.ts (Path==EntryFile==example.ts).
+	if err := os.WriteFile(filepath.Join(root, "example.ts"), []byte("/** A demo extension. */\nexport default function() {}\n"), 0o644); err != nil {
+		t.Fatalf("write example.ts: %v", err)
+	}
+	// A dir ext: git-checkpoint/index.ts (Path is the dir, EntryFile is index.ts).
+	writeDirExt(t, root, "git-checkpoint", "Git checkpoint extension.")
+	t.Setenv("weave_EXTENSIONS_DIR", root)
+
+	// --all (default): example.ts + git-checkpoint/ (the dir).
+	var outAll, errAll bytes.Buffer
+	if code := run([]string{"--all"}, &outAll, &errAll); code != 0 {
+		t.Fatalf("run(--all): code=%d; want 0", code)
+	}
+	linesAll := strings.Split(strings.TrimRight(outAll.String(), "\n"), "\n")
+	if len(linesAll) != 2 {
+		t.Fatalf("--all want 2 paths; got %d: %q", len(linesAll), outAll.String())
+	}
+	if linesAll[0] != filepath.Join(root, "example.ts") {
+		t.Errorf("--all lines[0]=%q; want example.ts", linesAll[0])
+	}
+	if linesAll[1] != filepath.Join(root, "git-checkpoint") {
+		t.Errorf("--all lines[1]=%q; want the git-checkpoint DIR (Path for dir kind)", linesAll[1])
+	}
+
+	// --all --file: example.ts + git-checkpoint/index.ts (the entry files).
+	var outFile, errFile bytes.Buffer
+	if code := run([]string{"--all", "--file"}, &outFile, &errFile); code != 0 {
+		t.Fatalf("run(--all --file): code=%d; want 0", code)
+	}
+	linesFile := strings.Split(strings.TrimRight(outFile.String(), "\n"), "\n")
+	if len(linesFile) != 2 {
+		t.Fatalf("--all --file want 2 paths; got %d: %q", len(linesFile), outFile.String())
+	}
+	if linesFile[0] != filepath.Join(root, "example.ts") {
+		t.Errorf("--all --file lines[0]=%q; want example.ts (EntryFile==Path for file kind)", linesFile[0])
+	}
+	if linesFile[1] != filepath.Join(root, "git-checkpoint", "index.ts") {
+		t.Errorf("--all --file lines[1]=%q; want git-checkpoint/index.ts (EntryFile for dir kind)", linesFile[1])
+	}
+}
+
+// --all --relative: every extension's path RELATIVE to the extensions dir, sorted.
+func TestRunAllRelativePrintsAllRelative(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--all", "--relative"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--all --relative): code=%d; want 0", code)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 paths; got %d: %q", len(lines), out.String())
+	}
+	if lines[0] != filepath.FromSlash("example.ts") {
+		t.Errorf("lines[0]=%q; want 'example.ts' (relative)", lines[0])
+	}
+	if lines[1] != filepath.FromSlash("writing/reddit-poster.ts") {
+		t.Errorf("lines[1]=%q; want 'writing/reddit-poster.ts' (relative, OS-sep)", lines[1])
+	}
+}
+
+// --all with an EMPTY store -> prints nothing, exit 0 (PRD §6.1: --all is ALWAYS
+// exit 0, UNLIKE --list which exits 1 "if no extensions found" — --all is a
+// scripting command where empty output + exit 0 is the useful shape).
+func TestRunAllEmptyStoreExit0(t *testing.T) {
+	t.Setenv("weave_EXTENSIONS_DIR", t.TempDir()) // exists, no .ts files
+	var out, errOut bytes.Buffer
+	code := run([]string{"--all"}, &out, &errOut)
+	if code != 0 {
+		t.Errorf("run(--all) empty: code=%d; want 0 (PRD §6.1 --all is always 0)", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("run(--all) empty stdout=%q; want empty", out.String())
+	}
+}
+
+// --all when the extensions dir is unresolvable -> exit 1, empty stdout, the
+// one-line fix (same contract as --path/--list/<tag>).
+func TestRunAllUnresolvable(t *testing.T) {
+	unsetExtEnv(t)
+	t.Chdir(t.TempDir()) // all §8.3 rules miss
+	var out, errOut bytes.Buffer
+	code := run([]string{"--all"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(--all) unresolvable: code=%d; want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want empty", out.String())
+	}
+	if !strings.Contains(errOut.String(), "weave init") {
+		t.Errorf("stderr=%q; want the one-line fix", errOut.String())
+	}
+}
+
+// --version precedes --all even when both are given (PRD §6.3).
+func TestRunVersionPrecedenceOverAll(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--all", "--version"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--all --version): code=%d; want 0 (version precedence)", code)
+	}
+	if got := out.String(); got != "weave "+version+"\n" {
+		t.Errorf("stdout=%q; want the version line (precedence over --all)", got)
 	}
 }

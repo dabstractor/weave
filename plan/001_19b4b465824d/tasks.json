@@ -311,7 +311,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Tag resolution & modifiers (PRD §7.2, build order step 3)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Implement tag → extension resolution with the 4-step precedence (canonical → basename → name → alias), and wire the canonical `weave <tag>` path printer with the --file/--relative/--all modifiers and the critical §6.4 atomicity contract.",
           "tasks": [
             {
@@ -343,14 +343,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "main.go wiring <tag>, -f, --all, --relative",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Wire the canonical `weave <tag> [<tag>...]` resolution loop with the §6.4 atomicity contract (buffer all paths, flush only if all resolve), the --file/--relative/--all modifiers, and the extensionPath() helper that distinguishes Path (default) from EntryFile (--file).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Tag resolution loop + extensionPath() + atomicity + modifiers",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M3.T1.S1",
@@ -380,14 +380,14 @@
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "internal/search — substring search",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Port skilldozer's internal/search verbatim. Filters []Extension by case-insensitive substring over tag, name, description, keywords, aliases, category.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T1.S1",
                   "title": "Search() + matches() over 6 fields",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
