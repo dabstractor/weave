@@ -1,0 +1,36 @@
+h1.0 PRD — Weave
+ h2.0 1. Goal
+  h3.0 Why it exists
+ h2.1 2. Hard constraints (non-negotiable)
+ h2.2 3. Background — how pi extensions work (factual grounding)
+ h2.3 4. Recommended stack
+ h2.4 5. Target repository layout
+ h2.5 6. CLI contract (authoritative)
+  h3.1 6.1 Commands / flags
+  h3.2 6.2 Modifiers (combine with tag resolution or --all)
+  h3.3 6.3 Default behavior
+  h3.4 6.4 Error semantics (critical for $(...) use)
+ h2.6 7. Extension discovery & tag resolution
+  h3.5 7.1 Discovery
+  h3.6 7.2 Tag resolution precedence (first match wins; later steps only consulted if earlier produced nothing)
+  h3.7 7.3 Metadata extraction
+ h2.7 8. Locating the extensions directory
+  h3.8 8.1 Configuration file
+  h3.9 8.2 First-run setup — weave init
+  h3.10 8.3 Resolution priority (first hit wins)
+ h2.8 9. Validation — weave check
+ h2.9 10. Extension directory & metadata conventions
+ h2.10 11. The one shipped example extension
+ h2.11 12. Installation
+  h3.11 12.1 install.sh (mirrors skilldozer install.sh)
+  h3.12 12.2 go install
+  h3.13 12.3 Releases (optional, phase 2)
+ h2.12 13. Acceptance criteria (the implementer must verify all pass)
+ h2.13 14. Shell completions
+ h2.14 15. README.md outline
+ h2.15 16. .gitignore
+ h2.16 17. Constraints & guardrails (do NOT do these)
+ h2.17 18. Suggested build order (for the one-shot pass)
+ h2.18 19. Decisions log (assumptions made in lieu of asking — override if you disagree)
+---
+code:10 para:40 list:19 table:4 quote:5
