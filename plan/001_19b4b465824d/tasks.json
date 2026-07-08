@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Foundation, config & extdir location (PRD §8, build order step 1)",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Establish the buildable Go skeleton (go.mod, .gitignore, LICENSE) and implement the single most failure-prone area: the settings config file (§8.1) and locating the extensions/ dir via the §8.3 priority order (env var → config → sibling-of-binary via os.Executable+EvalSymlinks → walk-up-from-cwd). Prove it with a minimal `weave --path` / `weave --version`. Also build the full parseArgs() arg parser so later milestones only add dispatch branches, not parser changes.",
           "tasks": [
             {
@@ -128,14 +128,14 @@
               "type": "Task",
               "id": "P1.M1.T4",
               "title": "main.go entrypoint — parseArgs skeleton + run() dispatch (--path, --version)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Build main.go with the FULL parseArgs() arg parser (all §6.1/§6.2 flags, short bundles, =-forms, init/check subcommands, unknown flag capture) so later milestones only add dispatch branches to run(). Initially dispatch only --version and --path to prove location resolution works.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T4.S1",
                   "title": "config struct + parseArgs (full flag matrix) + run() dispatch (--version, --path)",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T3.S3"
@@ -172,7 +172,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Extension struct + package.json parsing + BuildExtension",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"

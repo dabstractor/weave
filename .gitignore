@@ -1,8 +1,13 @@
 /weave
 /dist
+/build
 *.test
 *.out
 .DS_Store
+
+# Dependency directories
+node_modules/
+vendor/
 
 # Environment files
 .env
