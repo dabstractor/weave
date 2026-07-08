@@ -218,6 +218,16 @@ func nodeModulesPresent(ext discover.Extension) bool {
 	return err == nil && info.IsDir()
 }
 
+// fileExists reports whether a non-directory entry exists at path. It mirrors
+// discover.fileExists and extdir.fileExists (both unexported); the check package
+// needs its own copy to inspect pi.extensions entries without an import cycle.
+// os.Stat follows symlinks, so a symlink to a file counts (matching pi's
+// fs.existsSync semantics and discover.classifyDir's fileExists).
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 // appendDuplicateRelTagFindings adds a duplicate-relTag ERROR to every entry
 // that shares its canonical RelTag with at least one other entry (PRD §9).
 //
@@ -272,12 +282,57 @@ func appendDuplicateRelTagFindings(rep *Report) {
 	}
 }
 
+// allMissingPiExtensions reports whether dir has a package.json with a
+// non-empty pi.extensions array where NONE of the declared string entries exist
+// on disk. It returns the list of missing entry paths (as declared in
+// pi.extensions) when all are missing; it returns nil otherwise — including: no
+// package.json, a parse error, an empty/absent pi.extensions, any non-string-only
+// pi.extensions, or the case where AT LEAST ONE declared entry exists (the
+// not-all-missing case, which classifyDir already turned into a real package
+// extension that never reaches appendEmptyFolderFindings).
+//
+// pkg.Pi.Extensions has type discover.lenientAnySlice (an unexported []any); the
+// underlying []any is rangeable from this package, and each element is an any
+// narrowed to string via comma-ok (non-strings are dropped leniently, matching
+// discover.classifyDir's toStringSlice).
+func allMissingPiExtensions(dir string) []string {
+	pkg, hasPkg, perr := discover.ParsePackageJSON(dir)
+	if !hasPkg || perr != nil {
+		return nil
+	}
+	var missing []string
+	hasAny := false
+	for _, e := range pkg.Pi.Extensions {
+		s, ok := e.(string)
+		if !ok {
+			continue
+		}
+		hasAny = true
+		if !fileExists(filepath.Join(dir, s)) {
+			missing = append(missing, s)
+		} else {
+			return nil // at least one exists → not all-missing
+		}
+	}
+	if !hasAny {
+		return nil
+	}
+	return missing
+}
+
 // appendEmptyFolderFindings walks the top-level children of dir and appends a
 // WARN for each plain category folder that contains ZERO discoverable entries at
 // any depth (PRD §9). A top-level subdir that IS a resolvable extension yields
 // ≥1 discover.Index entry and is therefore NOT flagged — discover.Index is
 // reused here so the resolvability semantics stay identical to Index's
 // classify-then-descend rule (no duplicated logic).
+//
+// Before emitting the WARN, the function checks whether the empty folder has a
+// package.json whose pi.extensions are ALL missing (a §9 ERROR — a broken entry
+// reference, per Issue 5 — rather than a benign empty folder); if so, it appends
+// an ERROR naming the missing entries and skips the WARN. Bug 1's classifyDir
+// fix means ONLY the all-missing case reaches here (a package.json with ≥1
+// existing entry is a real extension in the catalog, never an empty folder).
 //
 // Each empty-folder finding is appended to rep.ByExt as a synthetic
 // ExtensionReport whose Extension is zero-valued with RelTag set to the folder's
@@ -299,6 +354,22 @@ func appendEmptyFolderFindings(rep *Report, dir string) {
 			continue // an unreadable subdir is not "empty" (it errored); skip
 		}
 		if len(sub) == 0 {
+			// Before the WARN: if this empty folder has a package.json whose
+			// pi.extensions are ALL missing, that is a §9 ERROR (a broken entry
+			// reference), not a benign empty folder. Bug 1's classifyDir fix means
+			// ONLY the all-missing case reaches here (a package.json with ≥1
+			// existing entry is a real extension in the catalog, never an empty
+			// folder).
+			if missing := allMissingPiExtensions(child); len(missing) > 0 {
+				rep.ByExt = append(rep.ByExt, ExtensionReport{
+					Extension: discover.Extension{RelTag: e.Name()},
+					Findings: []Finding{{
+						Level:   LevelError,
+						Message: "pi.extensions entry does not exist: " + strings.Join(missing, ", "),
+					}},
+				})
+				continue // reported as ERROR; skip the empty-folder WARN (PRD §9 / Issue 5)
+			}
 			rep.ByExt = append(rep.ByExt, ExtensionReport{
 				Extension: discover.Extension{RelTag: e.Name()},
 				Findings: []Finding{{

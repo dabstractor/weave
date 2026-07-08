@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Bug Fix Sprint: Discovery Edge Cases",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Fix 6 issues (1 Major, 5 Minor) found during creative end-to-end QA of the weave implementation. Issue 1 (Major) silently breaks a PRD-supported multi-entry package shape and cascades into spurious errors. Issues 2-6 are edge cases and footguns in JSDoc extraction, root-level index.ts handling, symlinked store paths, check validation, and node_modules/hidden-file discovery. All PRD §13 acceptance gates currently pass; these fixes close the remaining gaps without changing any public API.",
       "milestones": [
         {
@@ -122,7 +122,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Validation and Metadata Edge Cases (Issues 2, 5)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Two independent fixes in different files. Issue 2 (jsdoc.go): the degenerate empty JSDoc block /**/ extracts '/' as the description because the opener and closer overlap. Issue 5 (check.go): a package with all-missing pi.extensions entries is reported as an 'empty category folder' WARN instead of the §9 ERROR. Issue 5 depends on Issue 1 (M1) being fixed first, since the multi-entry fix changes what 'all missing' means.",
           "tasks": [
             {
@@ -151,14 +151,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Surface §9 ERROR for all-missing pi.extensions in check (Issue 5)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "After Issue 1's fix (M1), a package.json whose pi.extensions are ALL missing still falls through classifyDir to a plain dir, yields zero discover.Index entries, and check emits a misleading 'empty category folder' WARN (exit 0). The §9 requirement wants an ERROR naming the bad pi.extensions path (exit 1). Fix: in appendEmptyFolderFindings, detect a package.json with all-missing pi.extensions before the WARN and emit an ERROR instead.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Add allMissingPiExtensions detection and ERROR in appendEmptyFolderFindings",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -178,21 +178,21 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Sync Changeset-Level Documentation",
-          "status": "Planned",
+          "status": "Ready",
           "description": "Final documentation sweep to ensure README.md and any overview docs accurately reflect the post-fix discovery behavior. Per SOW §5 Mode B: cross-cutting docs that only make sense once the whole changeset is in place ride as a final task with dependencies on all implementing subtasks.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "Sync changeset-level documentation",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Review README.md for accuracy against the post-fix behavior. The primary update is documenting that node_modules/, .git/, and hidden entries are skipped during discovery (Issue 6). Verify the package-kind description is consistent with the fixed classifyDir. No new doc files — update existing README.md content only.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T1.S1",
                   "title": "Update README.md to reflect post-fix discovery behavior",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",

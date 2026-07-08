@@ -404,6 +404,62 @@ func TestCheckNestedExtensionFolderNotFlagged(t *testing.T) {
 	}
 }
 
+// TestCheckAllMissingPiExtensionsIsError: a top-level dir whose package.json
+// declares a non-empty pi.extensions where NONE of the entries exist on disk is
+// the Bug 5 / Issue 5 (PRD §9) condition. check must surface an ERROR naming the
+// missing pi.extensions path (exit 1 via main), NOT the benign WARN 'empty
+// category folder' (exit 0). Bug 1's classifyDir fix means ONLY the all-missing
+// case reaches appendEmptyFolderFindings (a package.json with ≥1 existing entry
+// is a real extension in the catalog and never an empty folder).
+func TestCheckAllMissingPiExtensionsIsError(t *testing.T) {
+	root := t.TempDir()
+	// A real extension at the top level so the store is non-empty (matches
+	// TestCheckEmptyCategoryFolder's shape).
+	ext := mkFileExt(t, root, "gate", "/** d */\nexport function g() {}\n")
+	// The broken package dir: package.json with an all-missing pi.extensions.
+	// Do NOT use mkPackageExt — it writes a valid src/index.ts; the bug needs the
+	// entry file ABSENT. Write the package by hand (TestCheckUnparseablePackageJSON
+	// pattern).
+	dir := filepath.Join(root, "badpkg")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll badpkg: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"name":"badpkg","description":"d","pi":{"extensions":["./missing.ts"]}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	// NOTE: deliberately do NOT create ./missing.ts — that is the bug condition.
+
+	rep := Check(root, []discover.Extension{ext})
+
+	// Must be an ERROR (exit 1), not a WARN (exit 0).
+	if !rep.HasErrors() {
+		t.Errorf("all-missing pi.extensions → HasErrors=false; want true. Findings: %+v", rep.ByExt)
+	}
+	if rep.Errors < 1 {
+		t.Errorf("all-missing pi.extensions → Errors=%d; want >=1. Findings: %+v", rep.Errors, rep.ByExt)
+	}
+	f, ok := finding(rep, "pi.extensions entry does not exist")
+	if !ok {
+		t.Fatalf("missing 'pi.extensions entry does not exist' ERROR; got %+v", rep.ByExt)
+	}
+	if f.Level != LevelError {
+		t.Errorf("pi.extensions finding Level=%v; want LevelError", f.Level)
+	}
+	if !strings.Contains(f.Message, "./missing.ts") {
+		t.Errorf("ERROR should name the missing entry path; got %q", f.Message)
+	}
+	// Regression: no WARN 'empty category folder' may name badpkg (the all-missing
+	// ERROR must replace the WARN, not accompany it).
+	for _, r := range rep.ByExt {
+		for _, ff := range r.Findings {
+			if strings.Contains(ff.Message, "empty category folder") && strings.Contains(ff.Message, "badpkg") {
+				t.Errorf("badpkg must be an ERROR, not a WARN 'empty category folder'; got %q", ff.Message)
+			}
+		}
+	}
+}
+
 // TestCheckEmptyInputClean: Check(dir, nil) → 0/0, HasErrors false, no panic.
 func TestCheckEmptyInputClean(t *testing.T) {
 	root := t.TempDir()
