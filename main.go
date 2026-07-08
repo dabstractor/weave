@@ -19,9 +19,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dabstractor/weave/internal/check"
 	"github.com/dabstractor/weave/internal/discover"
 	"github.com/dabstractor/weave/internal/extdir"
 	"github.com/dabstractor/weave/internal/resolve"
+	"github.com/dabstractor/weave/internal/search"
 	"github.com/dabstractor/weave/internal/ui"
 )
 
@@ -420,7 +422,98 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// 4) --all / -a (PRD §6.1). Print every extension's path, one per line,
+	// 4) --search / -s <q> (PRD §6.1). Filters the index to extensions where <q>
+	//    is a case-insensitive substring of the tag, package.json
+	//    name/description/keywords, weave.aliases, or weave.category
+	//    (internal/search), then renders the SAME table as --list via ui.PrintList
+	//    (PRD §6.1: "same table format as --list, filtered"). The filtered slice
+	//    keeps discover.Index's RelTag sort. Exit 0 with the table on matches;
+	//    exit 1 (stderr message, EMPTY stdout) when nothing matches (PRD §6.1:
+	//    "1 if no matches"). --no-color / TTY color gating is shared with --list;
+	//    --file/--relative do NOT apply (search prints a TABLE, not paths — PRD
+	//    §6.2: modifiers combine with tag resolution or --all only).
+	if c.searchMode {
+		dir, _, err := extdir.Find() // src DISCARDED: --search does NOT print "(found via ...)"
+		if err != nil {
+			fmt.Fprintln(stderr, err) // one-line fix (PRD §6.4/§8); stdout stays empty
+			return 1
+		}
+		exts, err := discover.Index(dir)
+		if err != nil {
+			fmt.Fprintln(stderr, err) // e.g. dir vanished between Find and Index
+			return 1
+		}
+		matched := search.Search(c.searchQ, exts)
+		if len(matched) == 0 {
+			// PRD §6.1: exit 1 "if no matches". Mirror --list's "no extensions found"
+			// convention: message to stderr, stdout stays clean.
+			fmt.Fprintln(stderr, "no extensions matched "+c.searchQ)
+			return 1
+		}
+		ui.PrintList(stdout, matched, isTerminal(stdout) && !c.noColor)
+		return 0
+	}
+
+	// 5) `weave check` subcommand (PRD §9). Validates every extension in the store
+	//    and prints a report: one OK line per clean extension, one line per finding
+	//    (ERROR/WARN), ending with a "N extensions, M errors, K warnings" summary.
+	//    Exit 0 if there are no ERRORs, 1 if there are any (WARNs never change the
+	//    exit code, so `if weave check; then …` works as a gate). An empty store is
+	//    clean (0 extensions, 0 errors, 0 warnings) → exit 0 (unlike --list, which
+	//    exits 1 on empty).
+	//
+	//    check is a REPORT, not a path emitter: it ALWAYS prints its full findings
+	//    to STDOUT (pipeable to less/grep, like eslint/ruff/govet) and signals
+	//    pass/fail via the exit code. It is NOT subject to §6.4's "nothing on
+	//    stdout on failure" — that contract is for tag/path emitters used inside
+	//    $(...); check never participates in command substitution.
+	//
+	//    check.Check(dir, exts) takes the extensions DIR first because the §9
+	//    empty-category-folder rule needs a filesystem walk (it cannot be derived
+	//    from []Extension alone — discover.Index prunes empty subtrees). `dir` is
+	//    already in scope from extdir.Find above. --file/--relative/--no-color do
+	//    NOT apply (status report, not paths/table).
+	if c.check {
+		dir, _, err := extdir.Find() // src DISCARDED: check does NOT print "(found via ...)"
+		if err != nil {
+			fmt.Fprintln(stderr, err) // one-line fix (PRD §6.4/§8); stdout stays empty
+			return 1
+		}
+		exts, err := discover.Index(dir)
+		if err != nil {
+			fmt.Fprintln(stderr, err) // e.g. dir vanished between Find and Index
+			return 1
+		}
+		rep := check.Check(dir, exts)
+		// Render: status word left-padded to width 5 (OK/WARN/ERROR align); a clean
+		// extension gets ONE OK line, a problem extension gets ONE line PER finding.
+		// Name falls back to the BASENAME of RelTag when package.json name is empty
+		// (a single-file or metadata-less extension has no name) — NOT "(none)": the
+		// item description pins "<name or basename>".
+		for _, er := range rep.ByExt {
+			name := er.Extension.Name
+			if name == "" {
+				name = relTagBase(er.Extension.RelTag)
+			}
+			if len(er.Findings) == 0 {
+				fmt.Fprintf(stdout, "%-5s %s (%s)\n", "OK", er.Extension.RelTag, name)
+				continue
+			}
+			for _, f := range er.Findings {
+				fmt.Fprintf(stdout, "%-5s %s (%s): %s\n", f.Level, er.Extension.RelTag, name, f.Message)
+			}
+		}
+		// N = len(exts): the count of discovered EXTENSIONS. rep.ByExt may include
+		// synthetic empty-folder entries (§9), which are NOT extensions, so do NOT
+		// use len(rep.ByExt) for the count.
+		fmt.Fprintf(stdout, "%d extensions, %d errors, %d warnings\n", len(exts), rep.Errors, rep.Warnings)
+		if rep.HasErrors() {
+			return 1
+		}
+		return 0
+	}
+
+	// 6) --all / -a (PRD §6.1). Print every extension's path, one per line,
 	//    SORTED by canonical tag (discover.Index already sorts []Extension by
 	//    RelTag, so this just walks the index in order). Exit 0 even for an EMPTY
 	//    store (PRD §6.1 `--all` is ALWAYS exit 0, UNLIKE --list which exits 1 "if
@@ -446,7 +539,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// 5) Tag-resolution mode: `weave <tag> [<tag>...]` (PRD §6.1). Resolves each
+	// 7) Tag-resolution mode: `weave <tag> [<tag>...]` (PRD §6.1). Resolves each
 	//    tag to its extension path and prints one path per line, in INPUT order.
 	//
 	//    ATOMICITY (PRD §6.4 — the critical-for-$(...) contract): resolve EVERY
@@ -494,7 +587,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// 6) All other parsed modes are no-ops for now. M4 adds --search/check/init,
+	// 8) All other parsed modes are no-ops for now. M4 adds --search/check/init,
 	//    M5 adds --help/exclusivity/unknown-flag-2 and the no-args→usage path. The
 	//    parser is ALREADY complete; later milestones add dispatch branches HERE only.
 	return 0
@@ -543,4 +636,17 @@ func extensionPath(ext discover.Extension, extensionsDir string, c config) strin
 		}
 	}
 	return p
+}
+
+// relTagBase returns the final '/'-component of a canonical RelTag, used as the
+// display-name fallback in `weave check` when an extension has no package.json
+// name (a single-file or metadata-less extension). "writing/reddit-poster" →
+// "reddit-poster"; "example" → "example". It mirrors resolve's basename
+// resolution (PRD §7.2) so the "(<name or basename>)" parenthetical in the
+// check report is the SAME short name a user would type.
+func relTagBase(relTag string) string {
+	if i := strings.LastIndex(relTag, "/"); i >= 0 {
+		return relTag[i+1:]
+	}
+	return relTag
 }

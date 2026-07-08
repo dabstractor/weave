@@ -1172,3 +1172,206 @@ func TestRunVersionPrecedenceOverAll(t *testing.T) {
 		t.Errorf("stdout=%q; want the version line (precedence over --all)", got)
 	}
 }
+
+// --- run: --search (M4.T3.S1) ---
+
+// --search with a match → filtered TAG table on stdout, exit 0, stderr empty.
+func TestRunSearchMatch(t *testing.T) {
+	dir := sampleStore(t) // example + writing/reddit-poster
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--search", "reddit"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--search reddit): code=%d; want 0", code)
+	}
+	got := out.String()
+	for _, want := range []string{"TAG", "reddit-poster"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stdout missing %q:\n%s", want, got)
+		}
+	}
+	// A non-matching extension must NOT appear.
+	if strings.Contains(got, "example") {
+		t.Errorf("stdout has 'example' (filter not applied):\n%s", got)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr=%q; want empty", errOut.String())
+	}
+}
+
+// -s short form behaves identically to --search.
+func TestRunSearchShortFlag(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-s", "example"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(-s example): code=%d; want 0", code)
+	}
+	if !strings.Contains(out.String(), "example") {
+		t.Errorf("stdout missing example:\n%s", out.String())
+	}
+}
+
+// --search with NO match → exit 1, stderr "no extensions matched <q>", stdout EMPTY.
+func TestRunSearchNoMatchExit1(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--search", "zzz"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(--search zzz): code=%d; want 1 (no matches)", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY (§6.4: nothing on no-match)", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no extensions matched zzz") {
+		t.Errorf("stderr=%q; want 'no extensions matched zzz'", errOut.String())
+	}
+}
+
+// --search "" matches EVERY extension (empty substring) → behaves like --list.
+func TestRunSearchEmptyQueryMatchesAll(t *testing.T) {
+	dir := sampleStore(t)
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--search", ""}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--search ''): code=%d; want 0 (empty query matches all)", code)
+	}
+	got := out.String()
+	for _, want := range []string{"example", "reddit-poster"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stdout missing %q (empty query should match all):\n%s", want, got)
+		}
+	}
+}
+
+// --search when the dir is unresolvable → exit 1, stdout empty, one-line fix.
+func TestRunSearchUnresolvableExit1(t *testing.T) {
+	unsetExtEnv(t)
+	t.Chdir(t.TempDir()) // all §8.3 rules miss
+	var out, errOut bytes.Buffer
+	code := run([]string{"--search", "x"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(--search x) unresolvable: code=%d; want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want empty", out.String())
+	}
+	if !strings.Contains(errOut.String(), "weave init") {
+		t.Errorf("stderr=%q; want the one-line fix", errOut.String())
+	}
+}
+
+// --- run: check (M4.T3.S1) ---
+
+// check on a clean store → one OK line per extension + summary, exit 0.
+func TestRunCheckClean(t *testing.T) {
+	dir := sampleStore(t) // example + writing/reddit-poster, both have JSDoc descs
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"check"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(check) clean: code=%d; want 0", code)
+	}
+	got := out.String()
+	for _, want := range []string{"OK", "example", "reddit-poster",
+		"2 extensions, 0 errors, 0 warnings"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stdout missing %q:\n%s", want, got)
+		}
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr=%q; want empty (check prints to stdout)", errOut.String())
+	}
+}
+
+// check on an EMPTY store → "0 extensions, 0 errors, 0 warnings", exit 0.
+// (Unlike --list which exits 1 on empty; check is validation: nothing == nothing wrong.)
+func TestRunCheckEmptyStoreClean(t *testing.T) {
+	t.Setenv("weave_EXTENSIONS_DIR", t.TempDir()) // exists, no entries
+	var out, errOut bytes.Buffer
+	code := run([]string{"check"}, &out, &errOut)
+	if code != 0 {
+		t.Errorf("run(check) empty: code=%d; want 0 (empty store is clean)", code)
+	}
+	if !strings.Contains(out.String(), "0 extensions, 0 errors, 0 warnings") {
+		t.Errorf("stdout=%q; want the 0/0/0 summary", out.String())
+	}
+}
+
+// check with an ERROR → exit 1, the ERROR printed to STDOUT (pipeable).
+// Fixture: a dir with a BROKEN package.json + an index.ts. discover indexes it
+// as a dir-kind ext (case (b): broken JSON nulls Pi.Extensions, index.ts wins);
+// check re-parses package.json(dir) → ERROR "package.json is not valid JSON".
+func TestRunCheckWithErrorExit1(t *testing.T) {
+	root := t.TempDir()
+	brokenDir := filepath.Join(root, "broken")
+	if err := os.MkdirAll(brokenDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "package.json"),
+		[]byte("{ not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "index.ts"),
+		[]byte("/** x */\nexport default function() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("weave_EXTENSIONS_DIR", root)
+	var out, errOut bytes.Buffer
+	code := run([]string{"check"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(check) with error: code=%d; want 1 (any ERROR)", code)
+	}
+	got := out.String()
+	// The report is on STDOUT (check is a report, not a path emitter).
+	if !strings.Contains(got, "ERROR") || !strings.Contains(got, "broken") {
+		t.Errorf("stdout missing ERROR/broken line:\n%s", got)
+	}
+	if !strings.Contains(got, "1 errors") {
+		t.Errorf("stdout summary missing '1 errors':\n%s", got)
+	}
+}
+
+// check with only a WARN → exit 0 (warnings never change the exit code).
+// Fixture: a single-file ext with NO JSDoc and no package.json → Description=""
+// → check WARN "no description".
+func TestRunCheckWithWarningExit0(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "nodesc.ts"),
+		[]byte("export default function() {}\n"), 0o644); err != nil { // NO JSDoc
+		t.Fatal(err)
+	}
+	t.Setenv("weave_EXTENSIONS_DIR", root)
+	var out, errOut bytes.Buffer
+	code := run([]string{"check"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(check) with warning: code=%d; want 0 (warnings don't fail)", code)
+	}
+	got := out.String()
+	if !strings.Contains(got, "WARN") || !strings.Contains(got, "nodesc") {
+		t.Errorf("stdout missing WARN/nodesc line:\n%s", got)
+	}
+	if !strings.Contains(got, "0 errors, 1 warnings") {
+		t.Errorf("stdout summary missing '0 errors, 1 warnings':\n%s", got)
+	}
+}
+
+// check when the dir is unresolvable → exit 1, stdout empty, one-line fix.
+func TestRunCheckUnresolvableExit1(t *testing.T) {
+	unsetExtEnv(t)
+	t.Chdir(t.TempDir())
+	var out, errOut bytes.Buffer
+	code := run([]string{"check"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(check) unresolvable: code=%d; want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want empty", out.String())
+	}
+	if !strings.Contains(errOut.String(), "weave init") {
+		t.Errorf("stderr=%q; want the one-line fix", errOut.String())
+	}
+}
