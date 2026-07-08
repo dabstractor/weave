@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "weave v1.0 — Manifest-free extension path printer",
-      "status": "Planned",
+      "status": "Researching",
       "description": "One-shot build of the `weave` Go CLI: resolves a human-friendly extension tag to the absolute filesystem path of a locally-stored pi.dev extension, for consumption by `pi -e <path>`. Manifest-free (disk-discovered), never in a pi auto-discovery location, loaded only via explicit `-e`. Covers the full PRD: Go CLI (§6), discovery+classification+resolution (§7), extensions-dir location (§8), validation (§9), one example extension (§11), install.sh (§12), README (§15), and shell completions (§14). Build order follows PRD §18: extensions-dir location first (hardest), then discovery, resolution, search/check, CLI polish, then packaging/docs. Research findings live in plan/001_19b4b465824d/architecture/.",
       "milestones": [
         {
@@ -538,7 +538,7 @@
           "type": "Milestone",
           "id": "P1.M6",
           "title": "Example extension, packaging, docs & completions (build order steps 6-8)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Ship the one example extension, verify all §13 acceptance criteria pass, create install.sh, README.md, shell completions, and the final documentation sync.",
           "tasks": [
             {
@@ -619,14 +619,14 @@
               "type": "Task",
               "id": "P1.M6.T4",
               "title": "README.md (PRD §15)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Write the user-facing README following the §15 outline, mirroring skilldozer's README tone and structure.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T4.S1",
                   "title": "README.md (full §15 outline)",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M6.T2.S1",
@@ -650,14 +650,14 @@
               "type": "Task",
               "id": "P1.M6.T5",
               "title": "Sync changeset-level documentation (§5 Mode B)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Final documentation sweep: verify README features, env vars, and overview sections accurately reflect the complete implementation. Catch any documentation drift from the incremental build.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T5.S1",
                   "title": "Final doc sweep — verify README/features/env-vars/overview match implementation",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M6.T4.S1",
