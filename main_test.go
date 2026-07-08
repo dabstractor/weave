@@ -547,20 +547,24 @@ func TestRunVersionPrecedenceOverPath(t *testing.T) {
 	}
 }
 
-// --- run: no-op modes (this milestone) ---
+// --- run: no-args / no-mode default (M5.T1.S1) ---
 
-// No args at all is still a no-op in this milestone (the no-args → usage → exit 1
-// path lands in M5.T1.S1). A bare `weave` currently exits 0. (M3.T2.S1 dispatched
-// --all and <tag>, so those are no longer no-ops — they have dedicated test
-// blocks below; only truly-unrecognized argv still falls through to return 0.)
-func TestRunNoArgsIsNoOp(t *testing.T) {
+// No args -> usage to STDERR, exit 1 (PRD §6.3: "No arguments and no flag
+// -> print usage to stderr, exit 1"). stdout stays EMPTY so `$(weave)` in
+// command substitution sees nothing and a wrapper script notices the non-zero
+// exit. (Was TestRunNoArgsIsNoOp in M1-M4, asserting exit 0; the no-args ->
+// usage -> exit 1 path lands here.)
+func TestRunNoArgsPrintsUsageExit1(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := run(nil, &out, &errOut)
-	if code != 0 {
-		t.Errorf("run(nil): code=%d; want 0 (no-args → usage lands in M5.T1.S1)", code)
+	if code != 1 {
+		t.Errorf("run(nil): code=%d; want 1 (no-args -> usage on stderr, exit 1)", code)
 	}
-	if out.Len() != 0 || errOut.Len() != 0 {
-		t.Errorf("run(nil) produced output; want none (no-op): stdout=%q stderr=%q", out.String(), errOut.String())
+	if out.Len() != 0 {
+		t.Errorf("run(nil) stdout=%q; want EMPTY (usage goes to stderr)", out.String())
+	}
+	if !strings.Contains(errOut.String(), "USAGE") {
+		t.Errorf("run(nil) stderr=%q; want the usage block", errOut.String())
 	}
 }
 
@@ -1708,5 +1712,232 @@ func TestRunBareTagUnconfiguredNeverPrompts(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "run `weave init`") {
 		t.Errorf("run(sometag) stderr=%q; missing the 'run `weave init`' hint", errOut.String())
+	}
+}
+
+// --- run: CLI contract — help / precedence / unknown / exclusivity / no-args (M5.T1.S1) ---
+//
+// These exercise run()'s 7-step precedence ladder (help -> version -> unknownFlag
+// -> exclusivity -> init -> dispatch -> no-args) and PRD §6.4 (stdout EMPTY on
+// every error path). None of them need a store fixture / unsetExtEnv / t.Chdir:
+// they all exit BEFORE extdir.Find, so no dir resolution ever runs.
+
+// --help -> usage on STDOUT, exit 0, no ANSI, stderr empty.
+func TestRunHelpToStdoutExit0(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"--help"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--help): code=%d; want 0", code)
+	}
+	got := out.String()
+	for _, want := range []string{"USAGE:", "EXAMPLES:", "OPTIONS:", `pi -e "$(weave example)"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("run(--help) stdout missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b[") { // help is PLAIN
+		t.Errorf("run(--help) must not emit ANSI:\n%s", got)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("run(--help) stderr=%q; want empty", errOut.String())
+	}
+}
+
+// -h short form behaves identically to --help.
+func TestRunHelpShortFlag(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"-h"}, &out, &errOut); code != 0 {
+		t.Fatalf("run(-h): code=%d; want 0", code)
+	}
+	if !strings.Contains(out.String(), "USAGE") {
+		t.Errorf("run(-h) stdout=%q; want the usage block", out.String())
+	}
+}
+
+// --help wins over --version (PRD §6.3 "help wins"): stdout IS usage, NOT the
+// version line. help is checked BEFORE version in the precedence ladder.
+func TestRunHelpBeatsVersion(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"--help", "--version"}, &out, &errOut); code != 0 {
+		t.Fatalf("run(--help --version): code=%d; want 0 (help wins)", code)
+	}
+	if strings.Contains(out.String(), "weave "+version) {
+		t.Errorf("stdout must NOT contain the version line (help won):\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "USAGE") {
+		t.Errorf("stdout must BE the usage block:\n%s", out.String())
+	}
+}
+
+// --help wins over an unknown flag too (help precedes unknownFlag in the ladder).
+func TestRunHelpBeatsUnknownFlag(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"--help", "--bogus"}, &out, &errOut); code != 0 {
+		t.Fatalf("run(--help --bogus): code=%d; want 0 (help wins)", code)
+	}
+	if !strings.Contains(out.String(), "USAGE") {
+		t.Errorf("stdout must BE the usage block (help won):\n%s", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr=%q; want empty (help wins, no error printed)", errOut.String())
+	}
+}
+
+// --version wins over an unknown flag: unknownFlag is checked AFTER version, so
+// version masks it (exit 0, version line on stdout). Matches skilldozer.
+func TestRunVersionBeatsUnknownFlag(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"--version", "--bogus"}, &out, &errOut); code != 0 {
+		t.Fatalf("run(--version --bogus): code=%d; want 0 (version wins)", code)
+	}
+	if got := out.String(); got != "weave "+version+"\n" {
+		t.Errorf("stdout=%q; want the version line (version beats unknown)", got)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr=%q; want empty", errOut.String())
+	}
+}
+
+// Unknown long flag -> exit 2, 'unknown flag' to stderr, stdout EMPTY (PRD §6.4).
+func TestRunUnknownFlagExit2(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"--frobnicate"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("run(--frobnicate): code=%d; want 2", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY (PRD §6.4 $(...) safety)", out.String())
+	}
+	if want := "weave: unknown flag '--frobnicate'\n"; errOut.String() != want {
+		t.Errorf("stderr=%q; want %q", errOut.String(), want)
+	}
+}
+
+// Unknown short flag -> exit 2 (a single unknown char like -z).
+func TestRunUnknownShortFlagExit2(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"-z"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("run(-z): code=%d; want 2", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	if want := "weave: unknown flag '-z'\n"; errOut.String() != want {
+		t.Errorf("stderr=%q; want %q", errOut.String(), want)
+	}
+}
+
+// 2+ listing modes -> exit 2, "mutually exclusive" on stderr, stdout EMPTY.
+// exclusivityError family (a).
+func TestRunExclusivityListAndSearch(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"--list", "--search", "foo"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("run(--list --search foo): code=%d; want 2", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	if !strings.Contains(errOut.String(), "mutually exclusive") {
+		t.Errorf("stderr=%q; want 'mutually exclusive'", errOut.String())
+	}
+}
+
+// tags + --path -> exit 2 (exclusivityError family (b) WITH path, per PRD §6
+// byte-identity to skilldozer). Without --path in (b), this would silently
+// print the dir and drop `foo` — the exact bug skilldozer Issue 3 fixed.
+func TestRunExclusivityTagsAndPath(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"foo", "--path"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("run(foo --path): code=%d; want 2", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY (no silent tag drop)", out.String())
+	}
+	if !strings.Contains(errOut.String(), "cannot be combined") {
+		t.Errorf("stderr=%q; want 'cannot be combined'", errOut.String())
+	}
+}
+
+// tags + --list -> exit 2 (PRD §6.3 explicit; family (b)).
+func TestRunExclusivityTagsAndList(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"foo", "--list"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("run(foo --list): code=%d; want 2", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	if !strings.Contains(errOut.String(), "cannot be combined") {
+		t.Errorf("stderr=%q; want 'cannot be combined'", errOut.String())
+	}
+}
+
+// check + tags -> exit 2 (exclusivityError family (c)).
+func TestRunExclusivityCheckAndTags(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"check", "foo"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("run(check foo): code=%d; want 2", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	if !strings.Contains(errOut.String(), "check") {
+		t.Errorf("stderr=%q; want 'check' in the message", errOut.String())
+	}
+}
+
+// init + --list -> exit 2 (init is its own exclusive mode; family (f)).
+func TestRunExclusivityInitAndList(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"init", "--list"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("run(init --list): code=%d; want 2", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	if !strings.Contains(errOut.String(), "init") {
+		t.Errorf("stderr=%q; want 'init' in the message", errOut.String())
+	}
+}
+
+// init + a stray tag -> exit 2 (exclusivityError family (e)). The first
+// positional after `init` is the store dir (c.initStore, the `init <dir>` form
+// per PRD §8.2); a SECOND positional lands in c.tags and is rejected as a
+// stray. So `init foo bar` -> foo=store, bar=stray tag. (A lone `init foo` is
+// LEGAL init-with-store-dir and runs init, not an error.)
+func TestRunExclusivityInitAndStrayTag(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"init", "foo", "bar"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("run(init foo bar): code=%d; want 2 (stray tag)", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	if !strings.Contains(errOut.String(), "tag") {
+		t.Errorf("stderr=%q; want 'tag' in the message", errOut.String())
+	}
+}
+
+// Modifiers-only (no mode) -> exit 1, usage on stderr, stdout EMPTY. Modifiers
+// (--file/--relative/--no-color) are NOT a mode; they combine with one, so
+// modifiers-only selects no mode -> the no-args fallthrough.
+func TestRunModifiersOnlyNoMode(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"--no-color"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(--no-color): code=%d; want 1 (modifiers-only -> no mode)", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q; want EMPTY", out.String())
+	}
+	if !strings.Contains(errOut.String(), "USAGE") {
+		t.Errorf("stderr=%q; want the usage block", errOut.String())
 	}
 }

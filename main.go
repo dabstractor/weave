@@ -103,6 +103,76 @@ export default function (pi: ExtensionAPI) {
 }
 `
 
+// usageText is the full --help / no-args usage block (PRD §6.1, §6.3). It is
+// byte-identical in STRUCTURE to skilldozer's (PRD §6 header: the CLI contract
+// is byte-identical to skilldozer's except --file), with weave nouns: binary
+// `weave`, `extension`, the canonical `pi -e "$(weave <tag>)"` one-liner,
+// --file = ENTRY FILE (the .ts/.js file pi loads: file itself, index.ts, or
+// the first pi.extensions entry — NOT SKILL.md), and `extensions` dir. PLAIN
+// (no ANSI): `weave --help | grep` must work and tests use non-TTY buffers.
+// The SAME text is printed to STDOUT for --help (exit 0) and to STDERR for the
+// no-args default (exit 1) — only the destination + exit code differ.
+//
+// Column-alignment FIX: skilldozer's OPTIONS table has a latent bug where the
+// `init [<dir>]` and `--store <dir>` rows start their descriptions at column 20
+// (one space short of the other rows' column 21). weave pads EVERY OPTIONS row
+// so descriptions begin at column 21 (option-spec field left-justified width 16,
+// then a fixed 3-space gap).
+//
+// Single raw-string literal: the body contains an em-dash `—` (U+2014) in the
+// tagline (NOT a hyphen-minus — matches skilldozer's tagline) and ZERO
+// backticks, so NO `+ "`" +` splicing is needed. The closing backtick is on
+// its OWN line so the string ends with exactly one trailing `\n` (no trailing
+// blank line). A future editor MUST re-verify zero backticks after any edit.
+const usageText = `weave — manifest-free extension path printer
+
+Resolve extension tags to on-disk extension paths (manifest-free).
+
+USAGE:
+  weave <tag> [<tag>...]
+  weave --all
+  weave --list
+  weave --search <query>
+  weave check
+  weave init [<dir>]
+  weave --path
+  weave --help
+  weave --version
+
+EXAMPLES:
+  pi -e "$(weave example)"
+  pi -e "$(weave writing/reddit)"
+  weave example reddit          # one absolute path per line, input order
+  weave -f example              # print the entry file path
+  weave --relative --all        # every extension path, relative to the extensions dir
+  weave --list                  # human-readable catalog
+  weave --search reddit         # substring search over tag/name/description/keywords/aliases/category
+  weave check                   # validate every extension on disk
+  weave init --store <dir>      # non-interactive first-run setup
+
+OPTIONS:
+  <tag> [<tag>...]   Resolve tags to extension paths (one absolute path per line)
+  --all, -a          Print every extension's path, sorted by tag
+  --list, -l         Human-readable catalog (TAG, NAME, DESCRIPTION)
+  --search <q>, -s   Substring search over tag / name / description / keywords / aliases / category
+  check              Validate every extension on disk (report OK / WARN / ERROR)
+  init [<dir>]       First-run setup: pick/create the extensions store and write the config
+  --store <dir>      Non-interactive store path for init
+  --path, -p         Print the resolved extensions directory (discovery rule printed to stderr)
+  --file, -f         Print the entry file path instead of the resolvable path (modifier)
+  --relative         Print paths relative to the extensions directory (modifier)
+  --no-color         Disable ANSI color even on a TTY (modifier)
+  --help, -h         Show this help message
+  --version, -v      Print the weave version
+
+Exit codes: 0 success/help/version | 1 unresolved/no extensions/unresolvable dir | 2 unknown flag / mutually-exclusive modes
+`
+
+// usage returns the help block. A tiny indirection over the constant so every
+// print site is uniform (`fmt.Fprint(w, usage())`), whether the destination is
+// stdout (--help, exit 0) or stderr (no-args default, exit 1).
+func usage() string { return usageText }
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -400,12 +470,47 @@ func expandShortBundle(c *config, a string, args []string, i int) (consumeNext, 
 func run(args []string, stdout, stderr io.Writer) int {
 	c := parseArgs(args)
 
+	// 0) --help / -h (PRD §6.3 "help wins"): takes precedence over EVERYTHING,
+	//    including --version and unknown flags. Usage to STDOUT, exit 0. Help is
+	//    PLAIN (no ANSI) so `weave --help | grep` works and tests on non-TTY
+	//    buffers are deterministic. Help wins the tiebreaks: --help --version
+	//    -> usage (not the version line); --help --bogus -> usage (no error).
+	if c.help {
+		fmt.Fprint(stdout, usage())
+		return 0
+	}
+
 	// 1) --version (PRD §6.3: precedes everything except --help, which is M5).
 	//    Printed byte-exact: "weave <version>\n" — lowercase "weave", single
 	//    space, the version var, newline. NOT "Weave", NOT "weave v%s".
 	if c.version {
 		fmt.Fprintf(stdout, "weave %s\n", version)
 		return 0
+	}
+
+	// 1.1) Unknown dashed flag -> exit 2 (PRD §6 header "Unknown flags => error +
+	//      exit 2"). stdout stays EMPTY (PRD §6.4: $(...) safety so
+	//      `pi -e "$(weave --bogus)"` fails loudly with an empty command
+	//      substitution instead of passing a garbage path). Checked AFTER
+	//      --help/--version so those still win (the item's stated precedence:
+	//      `--version --bogus` -> version wins, exit 0); checked BEFORE
+	//      exclusivity so `--bogus --list` reports the unknown flag first (both
+	//      exit 2; the unknown flag is the more fundamental error).
+	if c.unknownFlag != "" {
+		fmt.Fprintf(stderr, "weave: unknown flag '%s'\n", c.unknownFlag)
+		return 2
+	}
+
+	// 1.2) Mode mutual exclusivity -> exit 2 (PRD §6.3). A pure predicate over
+	//      config (no I/O): it reads only mode fields, never touches the store.
+	//      GATES the init dispatch (1.5) and the mode ladder below: any forbidden
+	//      combination exits before runInit/extdir.Find/Index ever run, so no
+	//      partial output ever reaches stdout. Modifiers (--file/--relative/
+	//      --no-color) NEVER trigger it — they combine with a single mode, so
+	//      exclusivityError excludes them from its checks. stdout stays EMPTY.
+	if bad, msg := exclusivityError(c); bad {
+		fmt.Fprintln(stderr, msg)
+		return 2
 	}
 
 	// 1.5) `weave init` dispatch (PRD §8.2). init is exclusive; until M5.T1.S1
@@ -637,10 +742,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// 8) All other parsed modes are no-ops for now. M4 adds --search/check/init,
-	//    M5 adds --help/exclusivity/unknown-flag-2 and the no-args→usage path. The
-	//    parser is ALREADY complete; later milestones add dispatch branches HERE only.
-	return 0
+	// No recognized mode -> usage to STDERR, exit 1 (PRD §6.3: parity with
+	// get-server-config.sh / skilldozer). Covers BOTH truly-no-args (`weave`)
+	// and modifiers-only (`weave --no-color`): modifiers are NOT a mode, they
+	// combine with one, so if weave was asked to DO nothing, show usage. stdout
+	// stays EMPTY (PRD §6.4) so `$(weave)` in command substitution never sees
+	// garbage — a wrapper script notices the non-zero exit and the empty $(...).
+	fmt.Fprint(stderr, usage())
+	return 1
 }
 
 // extensionPath returns the path to print for a resolved extension, applying the
@@ -699,6 +808,71 @@ func relTagBase(relTag string) string {
 		return relTag[i+1:]
 	}
 	return relTag
+}
+
+// exclusivityError reports whether c combines modes that PRD §6.3 forbids,
+// returning a one-line stderr message describing the first violation found.
+// It is a PURE predicate over config (no I/O, no side effects), so it is
+// directly unit-testable and runs before any dir resolution. Ported verbatim
+// from skilldozer main.go exclusivityError, with the `skilldozer:` message
+// prefix swapped to `weave:` (PRD §6 header byte-identity mandate).
+//
+// Six families, checked IN ORDER (first hit wins, first message returned):
+//
+//	(a) 2+ listing modes (path/list/search/all)
+//	(b) tags + an inspection mode (path/list/search/all)
+//	(c) check + tags
+//	(d) check + a listing mode
+//	(e) init + tags
+//	(f) init + a mode (check/list/search/all/path)
+//
+// FAMILY (b) NOTE: the subtask description's (b) literally omits --path, but
+// PRD §6 mandates the contract is byte-identical to skilldozer (whose Issue 3
+// deliberately ADDED tags+path to avoid silently dropping a stray tag on
+// `weave foo --path` — without it, --path would print the dir and discard `foo`
+// with no error), and the item's own families (d) and (f) DO include --path,
+// confirming path belongs in the set. So (b) checks the FULL set
+// {path,list,searchMode,all}.
+//
+// Modifiers --file/--relative/--no-color NEVER trigger exclusivity: they combine
+// with a single mode (e.g. `--all --file`, `--list --no-color`) and so are
+// excluded from every check below.
+func exclusivityError(c config) (bad bool, msg string) {
+	// (a) PRD §6.3: any 2+ of the listing modes are mutually exclusive.
+	n := 0
+	for _, b := range []bool{c.path, c.list, c.searchMode, c.all} {
+		if b {
+			n++
+		}
+	}
+	if n >= 2 {
+		return true, "weave: listing modes --path/--list/--search/--all are mutually exclusive"
+	}
+	hasTags := len(c.tags) > 0
+	// (b) tags + an inspection mode (PRD §6.3; +path per byte-identity — see doc comment).
+	if hasTags && (c.path || c.list || c.searchMode || c.all) {
+		return true, "weave: tags cannot be combined with --path/--list/--search/--all"
+	}
+	// (c) check + tags.
+	if c.check && hasTags {
+		return true, "weave: 'check' cannot be combined with tag arguments"
+	}
+	// (d) check + a listing mode.
+	if c.check && (c.path || c.list || c.searchMode || c.all) {
+		return true, "weave: 'check' cannot be combined with --path/--list/--search/--all"
+	}
+	// (e)+(f) init is its own exclusive mode (PRD §6.3 / §8.2): rejects stray
+	//        tags AND modes. Both checked under c.init so the message matches the
+	//        offending field (tags vs modes), not a generic init-vs-anything error.
+	if c.init {
+		if hasTags {
+			return true, "weave: 'init' cannot be combined with tag arguments"
+		}
+		if c.check || c.list || c.searchMode || c.all || c.path {
+			return true, "weave: 'init' cannot be combined with --list/--search/--all/--path/check"
+		}
+	}
+	return false, ""
 }
 
 // --- init store selection (M4.T4.S1) ---
