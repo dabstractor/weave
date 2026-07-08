@@ -68,6 +68,41 @@ var isTerminal = func(w io.Writer) bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
+// exampleExtensionTemplate is the body of the one shipped example extension
+// (PRD §11), written verbatim into an EMPTY store's example.ts by setupStore
+// during `weave init` (PRD §8.2 step 3). It is a compiled-in STRING CONSTANT —
+// NOT a go:embed (PRD §17: "nothing about the user's collection is compiled
+// in" — the example is weave's own demo, the only collection that IS compiled
+// in; a real user's store is never embedded). CROSS-TASK CONTRACT: the repo
+// asset extensions/example.ts created by P1.M6.T1.S1 MUST equal this
+// byte-for-byte (both == PRD §11).
+//
+// Single raw-string literal: the §11 body has ZERO backticks (verified), so NO
+// `+ "`" +` splicing is needed (contrast skilldozer's exampleSkillTemplate,
+// whose body has 8 backticks and so splices). A future editor MUST re-verify
+// zero backticks after any edit to this body, or switch to the splice form.
+const exampleExtensionTemplate = `/**
+ * Reference example extension for weave. Demonstrates a minimal pi extension
+ * and how weave resolves a tag to an absolute path. Registers a harmless
+ * /weave-example command and greets on session start. Safe to delete once
+ * you add real extensions.
+ */
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", async (_event, ctx) => {
+    ctx.ui.notify("weave example extension loaded", "info");
+  });
+
+  pi.registerCommand("weave-example", {
+    description: "Prove the weave example extension is loaded",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify("Hello from the weave example extension!", "info");
+    },
+  });
+}
+`
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -371,6 +406,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if c.version {
 		fmt.Fprintf(stdout, "weave %s\n", version)
 		return 0
+	}
+
+	// 1.5) `weave init` dispatch (PRD §8.2). init is exclusive; until M5.T1.S1
+	//      lands exclusivityError, init is placed right after --version (the
+	//      highest-precedence dispatch present) and before the normal mode ladder.
+	//      runInit orchestrates resolveStore → configpkg.Path → setupStore, then
+	//      prints the --path rendering (dir→stdout, found-via→stderr) + the check
+	//      report (→stdout, mirroring the standalone check) per §8.2 step 5. The
+	//      bare-tag path never reaches here, so tag resolution never prompts
+	//      (§6.4/§8.2 prompt-safety: stdin access is confined to resolveStore,
+	//      which is called only here).
+	if c.init {
+		return runInit(c, stdout, stderr)
 	}
 
 	// 2) --path (PRD §6.1/§6.4). extdir.Find locates the dir via the §8.3 rules.
@@ -795,4 +843,110 @@ func resolveStore(haveStore string) (string, error) {
 		return "", fmt.Errorf("weave init: absolutize store: %w", err)
 	}
 	return abs, nil
+}
+
+// setupStore is the create+seed+write-config half of `weave init` (PRD §8.2
+// steps 2-4); the store-CHOICE half is resolveStore (M4.T4.S1), and run()'s
+// `if c.init` dispatch calls both via runInit. Both store and configPath are
+// INJECTED strings (store is already absolute — resolveStore absolutized it;
+// configPath is configpkg.Path()'s result from runInit), so this is directly
+// unit-testable with temp paths (no wrapper layer).
+//
+// KEY WEAVE DELTA vs skilldozer: seed store/example.ts (a SINGLE FILE at the
+// store ROOT), NOT store/example/SKILL.md in a subdirectory. There is NO
+// exampleDir and NO second MkdirAll — only the one os.MkdirAll(store, 0o755).
+//
+// Returns (seeded, nil) on success or (false, err) on any fs failure. `seeded`
+// is a SUCCESS-PATH signal (runInit prints "Seeded" vs "Adopted"); callers MUST
+// check err first.
+func setupStore(store, configPath string) (seeded bool, err error) {
+	if err := os.MkdirAll(store, 0o755); err != nil { // (a) ensure store exists (idempotent)
+		return false, fmt.Errorf("weave init: create store dir %q: %w", store, err)
+	}
+	entries, err := os.ReadDir(store) // (b) seed only if EMPTY (zero entries of any kind)
+	if err != nil {
+		return false, fmt.Errorf("weave init: read store dir %q: %w", store, err)
+	}
+	if len(entries) == 0 {
+		// Single-file extension at the store ROOT (PRD §11/§7.1). NO example/ subdir.
+		if err := os.WriteFile(filepath.Join(store, "example.ts"), []byte(exampleExtensionTemplate), 0o644); err != nil {
+			return false, fmt.Errorf("weave init: seed example.ts: %w", err)
+		}
+		seeded = true
+	}
+	// (c) Non-empty: adopt in place. Do NOTHING to existing files (PRD §17). seeded stays false.
+	if err := configpkg.Save(configPath, configpkg.File{Store: store}); err != nil { // (d) ALWAYS write config
+		return false, fmt.Errorf("weave init: write config %q: %w", configPath, err)
+	}
+	return seeded, nil
+}
+
+// runInit is the `weave init` orchestrator (PRD §8.2). run()'s dispatch calls it
+// when c.init is true (init is exclusive; M5's exclusivityError will enforce
+// that, but is not present yet — init is placed right after --version). It
+// assembles S1's resolveStore + configpkg.Path + setupStore, then reports: the
+// configured store path to stdout (PRD §6.1), the `--path` "found via"
+// annotation to stderr (PRD §8.2 step 5), and the check report to STDOUT (PRD
+// §8.2 step 5 — weave reproduces its own `check` output; this DIVERGES from
+// skilldozer, which put init's check report on stderr). Exit 0 once
+// create+config succeed; check findings NEVER change init's exit code
+// (best-effort report — item description: "check findings don't change init
+// exit code").
+//
+// The bare `weave <tag>` path NEVER reaches here (c.init is false for tags),
+// so tag resolution never prompts (PRD §6.4/§8.2): stdin access is confined to
+// resolveStore, which is called only in this function.
+func runInit(c config, stdout, stderr io.Writer) int {
+	store, err := resolveStore(c.initStore) // (1) S1: choose + absolutize (haveStore!="" never blocks)
+	if err != nil {
+		fmt.Fprintln(stderr, err) // resolveStore wraps with "weave init: …"
+		return 1
+	}
+	cfgPath, err := configpkg.Path() // (2) config-file location ($weave_CONFIG or XDG default)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	seeded, err := setupStore(store, cfgPath) // (3) create + seed-if-empty + write config
+	if err != nil {
+		fmt.Fprintln(stderr, err) // setupStore wraps with "weave init: …"
+		return 1
+	}
+	if seeded { // (4) report (STDERR — stdout stays the store-path headline)
+		fmt.Fprintf(stderr, "Seeded example extension at %s\n", filepath.Join(store, "example.ts"))
+	} else {
+		fmt.Fprintf(stderr, "Adopted existing store at %s\n", store)
+	}
+	dir, src, ferr := extdir.Find() // (5) effective store + which §8.3 rule won (AFTER setupStore)
+	if ferr != nil {
+		fmt.Fprintln(stderr, ferr) // should not happen (config just written); fall back to store
+		dir = store
+	}
+	fmt.Fprintln(stdout, dir) // §6.1: stdout = the configured store path
+	if ferr == nil {
+		fmt.Fprintf(stderr, "(found via %s)\n", src) // mirror `weave --path`
+	}
+	exts, ierr := discover.Index(dir) // (6) check report on the effective store (best-effort)
+	if ierr != nil {
+		fmt.Fprintln(stderr, ierr)
+		return 0 // setup OK; the report is best-effort
+	}
+	rep := check.Check(dir, exts) // DIR FIRST, exts SECOND (weave signature)
+	// Render to STDOUT (mirrors the standalone `weave check` branch; diverges
+	// from skilldozer, which rendered init's check report to stderr).
+	for _, er := range rep.ByExt {
+		name := er.Extension.Name
+		if name == "" {
+			name = relTagBase(er.Extension.RelTag) // reuse the existing main.go helper
+		}
+		if len(er.Findings) == 0 {
+			fmt.Fprintf(stdout, "%-5s %s (%s)\n", "OK", er.Extension.RelTag, name)
+			continue
+		}
+		for _, f := range er.Findings {
+			fmt.Fprintf(stdout, "%-5s %s (%s): %s\n", f.Level, er.Extension.RelTag, name, f.Message)
+		}
+	}
+	fmt.Fprintf(stdout, "%d extensions, %d errors, %d warnings\n", len(exts), rep.Errors, rep.Warnings)
+	return 0 // setup succeeded; check findings do not change init's exit code
 }

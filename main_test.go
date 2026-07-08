@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	configpkg "github.com/dabstractor/weave/internal/config"
 )
 
 // unsetExtEnv neutralizes the two env-based extdir rules (weave_EXTENSIONS_DIR
@@ -692,7 +694,7 @@ func TestRunListColorWhenTTY(t *testing.T) {
 func sampleStore(t *testing.T) string {
 	t.Helper()
 	return writeExtTree(t, map[string]string{
-		"example":              "A demo extension.",
+		"example":               "A demo extension.",
 		"writing/reddit-poster": "Posts to reddit.",
 	})
 }
@@ -1504,5 +1506,207 @@ func TestReadPromptFormatsDefAndTrims(t *testing.T) {
 	got3, err := readPrompt(r3, &out3, "Where", "/def")
 	if err != nil || got3 != "/def" {
 		t.Errorf("readPrompt(EOF): got (%q,%v); want (/def,nil)", got3, err)
+	}
+}
+
+// --- init: setupStore + runInit (M4.T4.S2) ---
+
+// TestSetupStoreEmptyDirSeedsExampleAndWritesConfig locks the empty-store seed
+// path: an empty store is created, example.ts is written with
+// exampleExtensionTemplate EXACTLY, and the config is written with store=<abs>
+// (round-tripped via configpkg.Load).
+func TestSetupStoreEmptyDirSeedsExampleAndWritesConfig(t *testing.T) {
+	store := t.TempDir() // empty
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	seeded, err := setupStore(store, cfg)
+	if err != nil {
+		t.Fatalf("setupStore(empty): %v; want nil", err)
+	}
+	if !seeded {
+		t.Errorf("setupStore(empty): seeded=false; want true")
+	}
+	// example.ts exists at the store ROOT with the template bytes EXACTLY.
+	got, err := os.ReadFile(filepath.Join(store, "example.ts"))
+	if err != nil {
+		t.Fatalf("read seeded example.ts: %v", err)
+	}
+	if string(got) != exampleExtensionTemplate {
+		t.Errorf("seeded example.ts != exampleExtensionTemplate:\ngot:\n%s\nwant:\n%s", got, exampleExtensionTemplate)
+	}
+	// config written with store=<abs> (round-trip via configpkg.Load).
+	f, err := configpkg.Load(cfg)
+	if err != nil {
+		t.Fatalf("configpkg.Load: %v", err)
+	}
+	if f.Store != store {
+		t.Errorf("config.Store=%q; want %q", f.Store, store)
+	}
+}
+
+// TestSetupStoreNonEmptyDirAdoptsInPlaceAndWritesConfig locks the §17
+// never-clobber guardrail: a store with ANY pre-existing entry is adopted —
+// the file is byte-intact, NO example.ts is created, seeded is false — but the
+// config is still written.
+func TestSetupStoreNonEmptyDirAdoptsInPlaceAndWritesConfig(t *testing.T) {
+	store := t.TempDir()
+	preExisting := filepath.Join(store, "mynotes.md") // a non-extension file
+	if err := os.WriteFile(preExisting, []byte("# my stuff\n"), 0o644); err != nil {
+		t.Fatalf("seed fixture: %v", err)
+	}
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	seeded, err := setupStore(store, cfg)
+	if err != nil {
+		t.Fatalf("setupStore(non-empty): %v; want nil", err)
+	}
+	if seeded {
+		t.Errorf("setupStore(non-empty): seeded=true; want false (adopt in place)")
+	}
+	if got, err := os.ReadFile(preExisting); err != nil || string(got) != "# my stuff\n" {
+		t.Errorf("pre-existing file changed: got %q, err=%v; want %q", got, err, "# my stuff\n")
+	}
+	// NO example.ts was created (single-file seed is gated on an EMPTY store).
+	if _, err := os.Stat(filepath.Join(store, "example.ts")); !os.IsNotExist(err) {
+		t.Errorf("example.ts must NOT be created in a non-empty store; stat err=%v", err)
+	}
+	f, err := configpkg.Load(cfg)
+	if err != nil {
+		t.Fatalf("configpkg.Load: %v", err)
+	}
+	if f.Store != store {
+		t.Errorf("config.Store=%q; want %q", f.Store, store)
+	}
+}
+
+// TestSetupStoreIdempotent locks the re-run contract: run 1 (empty) seeds,
+// run 2 (non-empty) adopts and does NOT clobber example.ts (byte-identical),
+// config stays valid.
+func TestSetupStoreIdempotent(t *testing.T) {
+	store := t.TempDir()
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	seeded1, err := setupStore(store, cfg)
+	if err != nil || !seeded1 {
+		t.Fatalf("first run: (%v,%v); want (true,nil)", seeded1, err)
+	}
+	first, err := os.ReadFile(filepath.Join(store, "example.ts"))
+	if err != nil {
+		t.Fatalf("read after first run: %v", err)
+	}
+	seeded2, err := setupStore(store, cfg) // store now non-empty → adopt
+	if err != nil {
+		t.Fatalf("second run: %v; want nil", err)
+	}
+	if seeded2 {
+		t.Errorf("second run: seeded=true; want false (store already has content)")
+	}
+	second, err := os.ReadFile(filepath.Join(store, "example.ts"))
+	if err != nil {
+		t.Fatalf("read after second run: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Errorf("idempotent re-run changed example.ts:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	f, err := configpkg.Load(cfg)
+	if err != nil {
+		t.Fatalf("configpkg.Load after re-run: %v", err)
+	}
+	if f.Store != store {
+		t.Errorf("config.Store=%q; want %q", f.Store, store)
+	}
+}
+
+// TestSetupStoreMkdirAllFailureReturnsWrappedError locks the error path: when
+// the store path points at an existing regular file, os.MkdirAll fails,
+// setupStore returns (false, err), and NO config.yaml is written (the failure
+// precedes configpkg.Save).
+func TestSetupStoreMkdirAllFailureReturnsWrappedError(t *testing.T) {
+	parent := t.TempDir()
+	store := filepath.Join(parent, "notadir") // make the store path a regular FILE
+	if err := os.WriteFile(store, []byte("x"), 0o644); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	seeded, err := setupStore(store, cfg)
+	if err == nil {
+		t.Fatalf("expected MkdirAll error; got (%v,nil)", seeded)
+	}
+	if seeded {
+		t.Errorf("on error: seeded=true; want false")
+	}
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Errorf("config must NOT be written on MkdirAll failure; stat err=%v", err)
+	}
+}
+
+// TestRunInitStoreWritesConfigCreatesStorePrintsPathExit0 is the full init
+// dispatch: `init --store <tmp>` routes through run() → runInit, which resolves
+// the store, creates+seeds it, writes the config, and reports. Asserts PRD §6.1
+// init row + §8.2 contract. WEAVE DELTA: the check report goes to STDOUT (item
+// desc step 6), so stdout CONTAINS both the store path AND the check summary —
+// NOT the skilldozer "exactly one line" assertion.
+func TestRunInitStoreWritesConfigCreatesStorePrintsPathExit0(t *testing.T) {
+	parent := t.TempDir()
+	store := filepath.Join(parent, "newstore") // does NOT exist yet → assert setupStore CREATES it
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("weave_CONFIG", cfg)        // redirect the config write to a temp file (LOWERCASE env var)
+	t.Setenv("weave_EXTENSIONS_DIR", "") // ensure the config rule wins (env unset) (LOWERCASE)
+	t.Chdir(t.TempDir())                 // escape the repo's walk-up rule (deterministic)
+
+	var out, errOut bytes.Buffer
+	code := run([]string{"init", "--store", store}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(init --store): code=%d; want 0; stderr=%q", code, errOut.String())
+	}
+	// store created (setupStore MkdirAll).
+	if info, err := os.Stat(store); err != nil || !info.IsDir() {
+		t.Errorf("store %q not created: stat err=%v", store, err)
+	}
+	// example.ts seeded at the store root.
+	if _, err := os.ReadFile(filepath.Join(store, "example.ts")); err != nil {
+		t.Errorf("seeded example.ts missing: %v", err)
+	}
+	// config written with store=<abs> (store is absolute; resolveStore's Abs is idempotent).
+	f, err := configpkg.Load(cfg)
+	if err != nil {
+		t.Fatalf("configpkg.Load: %v", err)
+	}
+	if f.Store != store {
+		t.Errorf("config.Store=%q; want %q", f.Store, store)
+	}
+	// §6.1 + §8.2 step 5: stdout carries the store path (one line) AND the check report.
+	if !strings.Contains(out.String(), store) {
+		t.Errorf("init stdout=%q; missing the store path %q", out.String(), store)
+	}
+	if !strings.Contains(out.String(), "extensions,") { // weave: check report on STDOUT
+		t.Errorf("init stdout=%q; missing the check summary (report must be on stdout)", out.String())
+	}
+	// STDERR carries the seeded note + the found-via annotation.
+	if !strings.Contains(errOut.String(), "Seeded example extension at") {
+		t.Errorf("init stderr=%q; missing 'Seeded example extension at'", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "(found via config file)") {
+		t.Errorf("init stderr=%q; missing '(found via config file)'", errOut.String())
+	}
+}
+
+// TestRunBareTagUnconfiguredNeverPrompts is the §6.4/§8.2 prompt-safety
+// regression guard. With a clean env (unsetExtEnv) and cwd in a temp dir,
+// `weave sometag` must exit 1, print the one-line "run `weave init`" hint to
+// stderr, write NOTHING to stdout, and NEVER reach resolveStore (c.init is false
+// for tags, so no stdin access). stdout-empty is the §6.4 $(...) contract; the
+// never-prompt is structural (resolveStore is called only in runInit).
+func TestRunBareTagUnconfiguredNeverPrompts(t *testing.T) {
+	unsetExtEnv(t)       // weave_EXTENSIONS_DIR + weave_CONFIG → ghost temp paths (rules 1&2 miss)
+	t.Chdir(t.TempDir()) // escape the repo's walk-up rule (rule 4 must miss too)
+
+	var out, errOut bytes.Buffer
+	code := run([]string{"sometag"}, &out, &errOut)
+	if code != 1 {
+		t.Errorf("run(sometag) unconfigured: code=%d; want 1", code)
+	}
+	if out.String() != "" { // §6.4: NOTHING on stdout so $(...) fails loudly
+		t.Errorf("run(sometag) stdout=%q; want empty", out.String())
+	}
+	if !strings.Contains(errOut.String(), "run `weave init`") {
+		t.Errorf("run(sometag) stderr=%q; missing the 'run `weave init`' hint", errOut.String())
 	}
 }

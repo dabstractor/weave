@@ -373,7 +373,7 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Search, validation & init (PRD §6.1 search/check, §9, §8.2, build order step 4)",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Implement --search (substring filter over 6 metadata fields), check (validation report with ERROR/WARN rules), and the weave init first-run setup command (interactive store selection, create+seed+writeconfig).",
           "tasks": [
             {
@@ -457,7 +457,7 @@
               "type": "Task",
               "id": "P1.M4.T4",
               "title": "weave init command (PRD §8.2)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Implement the first-run setup: interactive/non-interactive store selection, dir creation, example seeding, config writing, and reporting. The bare `weave <tag>` path NEVER reaches here (prompt safety).",
               "subtasks": [
                 {
@@ -480,7 +480,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T4.S2",
                   "title": "setupStore + runInit + exampleExtensionTemplate + init dispatch in run()",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M4.T4.S1",
@@ -502,21 +502,21 @@
           "type": "Milestone",
           "id": "P1.M5",
           "title": "CLI polish & error semantics (PRD §6.3, §6.4, build order step 5)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Finalize the CLI contract: --help usage text, precedence ordering (--help > --version > unknown flag > exclusivity > dispatch), unknown flag → exit 2, mutual exclusivity checking, and the no-args default (usage to stderr, exit 1).",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M5.T1",
               "title": "Full CLI contract — --help, precedence, exclusivity, error semantics",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Complete the §6.3/§6.4 CLI matrix: --help text, precedence ordering, mutual exclusivity rules, unknown flag exit 2, and no-args default behavior.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M5.T1.S1",
                   "title": "--help usage text + run() precedence + exclusivityError + unknown-flag exit 2 + no-args default",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M4.T4.S2"
