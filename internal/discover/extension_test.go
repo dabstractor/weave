@@ -8,7 +8,7 @@ import (
 )
 
 // writePackageJSON writes content to dir/package.json for tests; the parse path
-// under test is parsePackageJSON(dir). It is the weave analog of skilldozer's
+// under test is ParsePackageJSON(dir). It is the weave analog of skilldozer's
 // writeSkill (defined in discover_test.go there); it is defined HERE because no
 // sibling test file exists yet in this package. MkdirAll ensures dir exists.
 func writePackageJSON(t *testing.T, dir, content string) {
@@ -71,10 +71,10 @@ func TestToStringSlice(t *testing.T) {
 	}
 }
 
-// --- parsePackageJSON ---
+// --- ParsePackageJSON ---
 
 // TestParsePackageJSONSuccess: a full PRD-§10 package.json round-trips through
-// parsePackageJSON with every field populated and hasPkg=true, err=nil.
+// ParsePackageJSON with every field populated and hasPkg=true, err=nil.
 func TestParsePackageJSONSuccess(t *testing.T) {
 	dir := t.TempDir()
 	writePackageJSON(t, dir, `{
@@ -89,9 +89,9 @@ func TestParsePackageJSONSuccess(t *testing.T) {
 	  "dependencies": { "zod": "^3.0.0" }
 	}`)
 
-	pkg, hasPkg, err := parsePackageJSON(dir)
+	pkg, hasPkg, err := ParsePackageJSON(dir)
 	if err != nil {
-		t.Fatalf("parsePackageJSON err=%v; want nil", err)
+		t.Fatalf("ParsePackageJSON err=%v; want nil", err)
 	}
 	if !hasPkg {
 		t.Fatal("hasPkg=false; want true (package.json present and valid)")
@@ -121,37 +121,37 @@ func TestParsePackageJSONSuccess(t *testing.T) {
 }
 
 // TestParsePackageJSONMissing: a dir with NO package.json yields the
-// (packageJSON{}, false, nil) 3-valued shape — a missing file is NOT an error.
+// (PackageJSON{}, false, nil) 3-valued shape — a missing file is NOT an error.
 func TestParsePackageJSONMissing(t *testing.T) {
 	dir := t.TempDir() // exists, but empty — no package.json
-	pkg, hasPkg, err := parsePackageJSON(dir)
+	pkg, hasPkg, err := ParsePackageJSON(dir)
 	if err != nil {
 		t.Fatalf("err=%v; want nil (missing file is not an error)", err)
 	}
 	if hasPkg {
 		t.Error("hasPkg=true; want false (no package.json present)")
 	}
-	if !reflect.DeepEqual(pkg, packageJSON{}) {
-		t.Errorf("pkg=%#v; want packageJSON{} (zero value)", pkg)
+	if !reflect.DeepEqual(pkg, PackageJSON{}) {
+		t.Errorf("pkg=%#v; want PackageJSON{} (zero value)", pkg)
 	}
 }
 
 // TestParsePackageJSONMalformed: a package.json that exists but is invalid JSON
-// yields (packageJSON{}, true, parseError) — hasPkg=true signals "we tried and
+// yields (PackageJSON{}, true, parseError) — hasPkg=true signals "we tried and
 // failed". check (§9 ERROR) consumes this. err is asserted non-nil but NOT
 // type-pinned (json errors are an implementation detail).
 func TestParsePackageJSONMalformed(t *testing.T) {
 	dir := t.TempDir()
 	writePackageJSON(t, dir, `{"name": "x"`) // truncated, invalid JSON
-	pkg, hasPkg, err := parsePackageJSON(dir)
+	pkg, hasPkg, err := ParsePackageJSON(dir)
 	if err == nil {
 		t.Fatal("err=nil; want a parse error (truncated JSON)")
 	}
 	if !hasPkg {
 		t.Error("hasPkg=false; want true (package.json exists but unparseable)")
 	}
-	if !reflect.DeepEqual(pkg, packageJSON{}) {
-		t.Errorf("pkg=%#v; want packageJSON{} (unmarshal failed before any field set)", pkg)
+	if !reflect.DeepEqual(pkg, PackageJSON{}) {
+		t.Errorf("pkg=%#v; want PackageJSON{} (unmarshal failed before any field set)", pkg)
 	}
 }
 
@@ -160,7 +160,7 @@ func TestParsePackageJSONMalformed(t *testing.T) {
 func TestParsePackageJSONUnknownKeysIgnored(t *testing.T) {
 	dir := t.TempDir()
 	writePackageJSON(t, dir, `{"name":"x","bogus":1,"weave":{"aliases":["a","b"]}}`)
-	pkg, hasPkg, err := parsePackageJSON(dir)
+	pkg, hasPkg, err := ParsePackageJSON(dir)
 	if err != nil {
 		t.Fatalf("err=%v; want nil (unknown keys must NOT error)", err)
 	}
@@ -179,7 +179,7 @@ func TestParsePackageJSONUnknownKeysIgnored(t *testing.T) {
 // TestParsePackageJSONLenientWrongTypes — THE CRITICAL LENIENCY TEST. Every
 // array/scalar field is WRONG-TYPED. PRD §7.3 demands this parse with err==nil
 // (coerced, not errored). A typed []string/string struct would FAIL here; the
-// []any/any typing makes it pass. If this test fails, a packageJSON field is
+// []any/any typing makes it pass. If this test fails, a PackageJSON field is
 // typed []string/string and must be changed to []any/any.
 func TestParsePackageJSONLenientWrongTypes(t *testing.T) {
 	dir := t.TempDir()
@@ -192,7 +192,7 @@ func TestParsePackageJSONLenientWrongTypes(t *testing.T) {
 	    "category": 456
 	  }
 	}`)
-	pkg, hasPkg, err := parsePackageJSON(dir)
+	pkg, hasPkg, err := ParsePackageJSON(dir)
 	// LOAD-BEARING ASSERTION: err==nil. A typed []string/string struct would
 	// return "json: cannot unmarshal X into Go struct field ... of type Y".
 	if err != nil {
@@ -234,7 +234,7 @@ func TestParsePackageJSONLenientWrongTypes(t *testing.T) {
 // TestBuildExtensionFull: all fields populated, hasPkg=true, jsdocDesc="".
 // Mirrors skilldozer TestBuildSkillFull's assertion style.
 func TestBuildExtensionFull(t *testing.T) {
-	pkg := packageJSON{
+	pkg := PackageJSON{
 		Name:        any("example"),
 		Description: any("An example."),
 		Keywords:    []any{"example", "demo", "weave"},
@@ -276,11 +276,11 @@ func TestBuildExtensionFull(t *testing.T) {
 	}
 }
 
-// TestBuildExtensionNoPackageJSON: pkg=packageJSON{}, hasPkg=false, jsdocDesc="".
+// TestBuildExtensionNoPackageJSON: pkg=PackageJSON{}, hasPkg=false, jsdocDesc="".
 // BuildExtension is TOTAL — no panic, empty metadata, but location fields still
 // set from args (a single-file extension with no package.json still resolves by tag).
 func TestBuildExtensionNoPackageJSON(t *testing.T) {
-	e := BuildExtension("/store/gate.ts", "/store/gate.ts", "gate", "file", packageJSON{}, false, "")
+	e := BuildExtension("/store/gate.ts", "/store/gate.ts", "gate", "file", PackageJSON{}, false, "")
 	if e.Path != "/store/gate.ts" {
 		t.Errorf("Path=%q; want /store/gate.ts", e.Path)
 	}
@@ -319,7 +319,7 @@ func TestBuildExtensionDescriptionFallback(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			pkg := packageJSON{Description: c.pkgDesc}
+			pkg := PackageJSON{Description: c.pkgDesc}
 			e := BuildExtension("/p", "/p/index.ts", "t", "dir", pkg, true, c.jsdocDesc)
 			if e.Description != c.want {
 				t.Errorf("Description=%q; want %q (pkgDesc=%#v jsdoc=%q)", e.Description, c.want, c.pkgDesc, c.jsdocDesc)
@@ -328,18 +328,18 @@ func TestBuildExtensionDescriptionFallback(t *testing.T) {
 	}
 }
 
-// TestBuildExtensionHasPackageJSONFromArg: pass hasPkg=true with pkg=packageJSON{}
+// TestBuildExtensionHasPackageJSONFromArg: pass hasPkg=true with pkg=PackageJSON{}
 // and assert HasPackageJSON==true. Proves HasPackageJSON is the ARGUMENT, not
 // re-derived from pkg's contents (the inverse of TestBuildExtensionNoPackageJSON).
 func TestBuildExtensionHasPackageJSONFromArg(t *testing.T) {
-	e := BuildExtension("/p", "/p/index.ts", "t", "package", packageJSON{}, true, "")
+	e := BuildExtension("/p", "/p/index.ts", "t", "package", PackageJSON{}, true, "")
 	if !e.HasPackageJSON {
 		t.Error("HasPackageJSON=false; want true (must come from the hasPkg arg, not pkg contents)")
 	}
 }
 
 // TestBuildExtensionEndToEnd: write a real PRD-§10 package.json, parse it, then
-// BuildExtension. Proves parsePackageJSON → BuildExtension round-trip against a
+// BuildExtension. Proves ParsePackageJSON → BuildExtension round-trip against a
 // real file (mirrors skilldozer TestBuildSkillEndToEnd: ParseFrontmatter→BuildSkill).
 func TestBuildExtensionEndToEnd(t *testing.T) {
 	dir := t.TempDir()
@@ -355,9 +355,9 @@ func TestBuildExtensionEndToEnd(t *testing.T) {
 	  "dependencies": { "zod": "^3.0.0" }
 	}`)
 
-	pkg, hasPkg, err := parsePackageJSON(dir)
+	pkg, hasPkg, err := ParsePackageJSON(dir)
 	if err != nil {
-		t.Fatalf("parsePackageJSON: %v", err)
+		t.Fatalf("ParsePackageJSON: %v", err)
 	}
 	if !hasPkg {
 		t.Fatal("hasPkg=false; want true")

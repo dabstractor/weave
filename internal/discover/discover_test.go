@@ -345,7 +345,7 @@ func TestClassifyDirIndexTSPrecedenceOverIndexJS(t *testing.T) {
 // TestClassifyDirPackageFullMetadata: a PRD-§10 package.json (name, description,
 // keywords, weave.aliases, weave.category, pi.extensions) + src/index.ts with a
 // JSDoc. classifyDir must return a fully-populated *Extension. Proves
-// parsePackageJSON (S1) → classifyDir (T2) → BuildExtension (S1) with
+// ParsePackageJSON (S1) → classifyDir (T2) → BuildExtension (S1) with
 // ExtractJSDoc (S2) fallback, all wired correctly. The description-fallback
 // priority (pkg.Description wins over jsdoc) is S1's concern; this test
 // confirms T2 passes the right values through.

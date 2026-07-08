@@ -32,7 +32,7 @@ import (
 //     by the per-entry `if err != nil { return nil }` -> (nil,nil).)
 //   - A per-entry error (an unreadable subtree) is SKIPPED; the walk continues.
 //   - Malformed package.json does NOT abort the walk (classifyDir/classifyFile
-//     ignore parsePackageJSON's err — lenient; check M4.T2 surfaces it).
+//     ignore ParsePackageJSON's err — lenient; check M4.T2 surfaces it).
 //
 // filepath.WalkDir does NOT follow symlinked directories (stdlib default); a
 // symlink to an extension dir is therefore not discovered. PRD §7.1 does not

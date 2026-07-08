@@ -143,7 +143,7 @@ func TestExtractJSDocFeedsBuildExtensionFallback(t *testing.T) {
 	}
 
 	// hasPkg=false, pkg=zero → BuildExtension falls back to jsdocDesc.
-	ext := BuildExtension(entry, entry, "gate", "file", packageJSON{}, false, jsdoc)
+	ext := BuildExtension(entry, entry, "gate", "file", PackageJSON{}, false, jsdoc)
 
 	if ext.Description != "Gate function. Second line." {
 		t.Errorf("Description = %q; want \"Gate function. Second line.\" (JSDoc fallback)",

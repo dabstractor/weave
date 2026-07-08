@@ -54,7 +54,7 @@ func isExtensionFile(name string) bool {
 //   - (ext, true): path is a single-file extension (.ts/.js, not index.*).
 //     ext is fully populated: Path==EntryFile==path (PRD §7.1: "the entry
 //     path is the file"), Kind="file", and Name/Description/Keywords/Category/
-//     Aliases/HasPackageJSON drawn from parsePackageJSON of path's DIR plus
+//     Aliases/HasPackageJSON drawn from ParsePackageJSON of path's DIR plus
 //     ExtractJSDoc(path) as the description fallback.
 //   - (nil, false): path is index.ts/index.js (a dir extension's entry —
 //     handled by classifyDir on the parent dir, NOT here, to avoid
@@ -64,10 +64,10 @@ func isExtensionFile(name string) bool {
 // with the trailing .ts (then .js, defensively) stripped. gate.ts → "gate";
 // writing/reddit-poster.ts → "writing/reddit-poster".
 //
-// classifyFile COMPOSES S1 (parsePackageJSON, BuildExtension) and S2
+// classifyFile COMPOSES S1 (ParsePackageJSON, BuildExtension) and S2
 // (ExtractJSDoc); it does NOT reimplement JSON parsing or JSDoc extraction.
-// parsePackageJSON's error is IGNORED (lenient discovery: a malformed
-// package.json yields packageJSON{} metadata and the file still resolves;
+// ParsePackageJSON's error is IGNORED (lenient discovery: a malformed
+// package.json yields PackageJSON{} metadata and the file still resolves;
 // check M4.T2 re-parses and surfaces the error).
 func classifyFile(root, path string) (*Extension, bool) {
 	name := filepath.Base(path)
@@ -81,7 +81,7 @@ func classifyFile(root, path string) (*Extension, bool) {
 	relTag := filepath.ToSlash(rel)
 	relTag = strings.TrimSuffix(relTag, ".ts")
 	relTag = strings.TrimSuffix(relTag, ".js")
-	pkg, hasPkg, _ := parsePackageJSON(filepath.Dir(path)) // S1 — lenient (ignore err)
+	pkg, hasPkg, _ := ParsePackageJSON(filepath.Dir(path)) // S1 — lenient (ignore err)
 	jsdoc := ExtractJSDoc(path)                            // S2
 	ext := BuildExtension(path, path, relTag, "file", pkg, hasPkg, jsdoc)
 	return &ext, true
@@ -115,10 +115,10 @@ func classifyFile(root, path string) (*Extension, bool) {
 // file does NOT qualify and falls through to b/c/d.
 //
 // relTag for a/b/c has NO .ts/.js strip (relTagForDir) — git-checkpoint/ →
-// "git-checkpoint". classifyDir COMPOSES S1 (parsePackageJSON, BuildExtension)
-// and S2 (ExtractJSDoc); parsePackageJSON's error is IGNORED (lenient).
+// "git-checkpoint". classifyDir COMPOSES S1 (ParsePackageJSON, BuildExtension)
+// and S2 (ExtractJSDoc); ParsePackageJSON's error is IGNORED (lenient).
 func classifyDir(root, path string) (ext *Extension, isExtension, shouldDescend bool) {
-	pkg, hasPkg, _ := parsePackageJSON(path) // S1 — lenient (ignore err)
+	pkg, hasPkg, _ := ParsePackageJSON(path) // S1 — lenient (ignore err)
 
 	// Case (a): package extension — package.json with pi.extensions → existing entry.
 	// Precedence: package.json is checked FIRST (pi_extension_facts.md §4).

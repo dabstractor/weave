@@ -1,8 +1,8 @@
 // Package discover scans the on-disk extensions/ tree and extracts extension
 // metadata (PRD §7.1, §7.3). This file (P1.M2.T1.S1) implements the Extension
 // data model and its constructors: the Extension struct (the typed record
-// resolve/search/check/ui consume), the packageJSON unmarshal target,
-// parsePackageJSON (read+parse a dir's package.json leniently), BuildExtension
+// resolve/search/check/ui consume), the PackageJSON unmarshal target,
+// ParsePackageJSON (read+parse a dir's package.json leniently), BuildExtension
 // (assemble an Extension from parsed data + walk-derived location info + a JSDoc
 // fallback description), and the toStringSlice []any→[]string normalizer. The
 // classify-then-descend walk (T2), Index (T3), and JSDoc extractor (S2) are
@@ -64,7 +64,7 @@ func toStringSlice(v any) []string {
 // renders it.
 //
 // It is BUILT by BuildExtension, never unmarshaled, so it carries NO json tags
-// (unlike packageJSON below, which is the unmarshal target). Putting
+// (unlike PackageJSON below, which is the unmarshal target). Putting
 // `json:"..."` tags on Extension is a category error — it is assembled
 // field-by-field by BuildExtension.
 //
@@ -110,7 +110,7 @@ type Extension struct {
 	HasPackageJSON bool
 }
 
-// packageJSON is the encoding/json unmarshal target for a directory's
+// PackageJSON is the encoding/json unmarshal target for a directory's
 // package.json (PRD §10). It carries json tags (unlike Extension, which is
 // BUILT, never unmarshaled).
 //
@@ -132,7 +132,7 @@ type Extension struct {
 // DisallowUnknownFields) — also a PRD §7.3 requirement. Dependencies is typed
 // map[string]string (maps are lenient by default for present keys; BuildExtension
 // does not consume it but check M4.T2 may).
-type packageJSON struct {
+type PackageJSON struct {
 	Name         any               `json:"name"`
 	Description  any               `json:"description"`
 	Keywords     []any             `json:"keywords"`
@@ -156,17 +156,17 @@ type weaveBlock struct {
 	Category any   `json:"category"`
 }
 
-// parsePackageJSON reads and parses the package.json in dir. It returns a
+// ParsePackageJSON reads and parses the package.json in dir. It returns a
 // 3-valued result that distinguishes the cases the §9 check (M4.T2) needs:
 //
-//   - (packageJSON{}, false, nil): NO package.json file (os.ReadFile failed —
+//   - (PackageJSON{}, false, nil): NO package.json file (os.ReadFile failed —
 //     file does not exist, or any other read error such as a permission
 //     failure). Normal for single-file extensions; check does NOT flag this.
 //     Collapsing ALL read errors (including non-NotExist) to hasPkg=false keeps
 //     the contract clean: hasPkg and err never contradict (a perm error with
 //     hasPkg=true,err!=nil would be ambiguous). The §9 check only cares about
 //     the "exists but unparseable" case below.
-//   - (packageJSON{}, true, err): package.json EXISTS but is unparseable JSON
+//   - (PackageJSON{}, true, err): package.json EXISTS but is unparseable JSON
 //     (truly malformed syntax — wrong-typed VALUES are absorbed by the
 //     []any/any typing and do not reach this branch). check (§9 ERROR) reports
 //     this. hasPkg=true signals "a package.json was read but unparseable".
@@ -176,7 +176,7 @@ type weaveBlock struct {
 //     ignored, wrong-typed array/scalar fields coerced (leniency, PRD §7.3).
 //
 // The caller (T3 Index) passes hasPkg straight through to BuildExtension.
-func parsePackageJSON(dir string) (pkg packageJSON, hasPkg bool, err error) {
+func ParsePackageJSON(dir string) (pkg PackageJSON, hasPkg bool, err error) {
 	data, rerr := os.ReadFile(filepath.Join(dir, "package.json"))
 	if rerr != nil {
 		// Any read failure (incl. fs.ErrNotExist AND permission errors) → treat
@@ -185,31 +185,31 @@ func parsePackageJSON(dir string) (pkg packageJSON, hasPkg bool, err error) {
 		// for this branch; if a future revision wants to surface perm errors,
 		// branch explicitly on errors.Is(rerr, fs.ErrNotExist).
 		_ = errors.Is(rerr, fs.ErrNotExist) // documents intent; current policy collapses all read errors
-		return packageJSON{}, false, nil
+		return PackageJSON{}, false, nil
 	}
 	if uerr := json.Unmarshal(data, &pkg); uerr != nil {
-		return packageJSON{}, true, uerr // exists but unparseable → hasPkg=true, err set
+		return PackageJSON{}, true, uerr // exists but unparseable → hasPkg=true, err set
 	}
 	return pkg, true, nil
 }
 
 // BuildExtension assembles an Extension from walk-derived location info (path,
 // entryFile, relTag, kind — produced by T2's classifier), the parsed package.json
-// (pkg from parsePackageJSON), whether a package.json was read (hasPkg, from
-// parsePackageJSON's second return), and a JSDoc fallback description (jsdocDesc,
+// (pkg from ParsePackageJSON), whether a package.json was read (hasPkg, from
+// ParsePackageJSON's second return), and a JSDoc fallback description (jsdocDesc,
 // supplied by the caller after S2's ExtractJSDoc runs on the entry file).
 //
-// It is the boundary between parsePackageJSON (this subtask, S1) + ExtractJSDoc
+// It is the boundary between ParsePackageJSON (this subtask, S1) + ExtractJSDoc
 // (S2) and the Index walk (T3). T3 calls it once per discovered entry:
 //
-//	pkg, hasPkg, perr := parsePackageJSON(dir)
+//	pkg, hasPkg, perr := ParsePackageJSON(dir)
 //	// T3 decides how to surface perr (malformed JSON) to check (M4); BuildExtension
-//	// itself never errors — it works on any packageJSON, including packageJSON{}
+//	// itself never errors — it works on any PackageJSON, including PackageJSON{}
 //	// (HasPackageJSON=false) from a no-package.json single-file extension.
 //	jsdoc := ExtractJSDoc(entryFile) // S2 — this subtask does NOT parse JSDoc
 //	e := BuildExtension(path, entryFile, relTag, kind, pkg, hasPkg, jsdoc)
 //
-// It is TOTAL: no error return, no panic — even when pkg is packageJSON{} (a
+// It is TOTAL: no error return, no panic — even when pkg is PackageJSON{} (a
 // missing package.json yields empty metadata + HasPackageJSON = hasPkg). The
 // comma-ok type assertions on the any-typed scalar fields are nil-safe and
 // wrong-typed-safe (a number-valued Description drops to "", not a panic).
@@ -221,10 +221,10 @@ func parsePackageJSON(dir string) (pkg packageJSON, hasPkg bool, err error) {
 // lives here so it is unit-testable in isolation by passing a synthetic jsdocDesc.
 //
 // HasPackageJSON comes from the hasPkg ARGUMENT verbatim — do NOT re-derive it
-// (e.g. "pkg != packageJSON{}"); the caller already knows from parsePackageJSON
+// (e.g. "pkg != PackageJSON{}"); the caller already knows from ParsePackageJSON
 // whether a file was found, and re-deriving would couple BuildExtension to
-// parsePackageJSON's zero-value representation.
-func BuildExtension(path, entryFile, relTag, kind string, pkg packageJSON, hasPkg bool, jsdocDesc string) Extension {
+// ParsePackageJSON's zero-value representation.
+func BuildExtension(path, entryFile, relTag, kind string, pkg PackageJSON, hasPkg bool, jsdocDesc string) Extension {
 	// Description fallback chain (PRD §7.3): package.json description FIRST,
 	// else JSDoc, else "".
 	desc, _ := pkg.Description.(string) // comma-ok: non-string/absent → "", false
