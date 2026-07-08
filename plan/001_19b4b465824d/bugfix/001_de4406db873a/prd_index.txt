@@ -1,0 +1,14 @@
+h1.0 Bug Fix Requirements
+ h2.0 Overview
+ h2.1 Critical Issues (Must Fix)
+ h2.2 Major Issues (Should Fix)
+  h3.0 Issue 1: Package with multiple pi.extensions entries is invisible when the FIRST entry is missing
+ h2.3 Minor Issues (Nice to Fix)
+  h3.1 Issue 2: Empty single-line JSDoc /**/ extracts / as the description
+  h3.2 Issue 3: An index.ts/index.js at the store ROOT collapses the entire store into one extension tagged .
+  h3.3 Issue 4: A symlinked weave_EXTENSIONS_DIR is accepted by --path but yields an empty catalog
+  h3.4 Issue 5: weave check reports a package with a missing pi.extensions entry as an "empty category folder" WARN, not the §9 ERROR
+  h3.5 Issue 6: node_modules/, hidden .ts files, and symlinked .ts files are discovered as catalog entries (footgun)
+ h2.4 Testing Summary
+---
+code:7 para:40 list:4

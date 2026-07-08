@@ -1,0 +1,182 @@
+{
+  "backlog": [
+    {
+      "type": "Phase",
+      "id": "P1",
+      "title": "Bug Fix Sprint: Discovery Edge Cases",
+      "status": "Researching",
+      "description": "Fix 6 issues (1 Major, 5 Minor) found during creative end-to-end QA of the weave implementation. Issue 1 (Major) silently breaks a PRD-supported multi-entry package shape and cascades into spurious errors. Issues 2-6 are edge cases and footguns in JSDoc extraction, root-level index.ts handling, symlinked store paths, check validation, and node_modules/hidden-file discovery. All PRD §13 acceptance gates currently pass; these fixes close the remaining gaps without changing any public API.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P1.M1",
+          "title": "Multi-Entry Package Resolution (Issue 1 — Major)",
+          "status": "Planned",
+          "description": "Fix classifyDir case (a) to iterate ALL pi.extensions entries and select the first existing one, instead of only checking entries[0]. This is the root cause of the init-vs-discovery inconsistency (extdir.hasPiExtensions already iterates correctly) and the upstream cause of spurious duplicate-relTag errors and mis-discovered stray entries. Mirrors PRD §7.1 'the first existing pi.extensions entry'.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M1.T1",
+              "title": "Fix classifyDir to iterate all pi.extensions entries",
+              "status": "Planned",
+              "description": "In internal/discover/discover.go classifyDir case (a), replace the entries[0]-only existence check with a loop over all entries that selects the first existing one. Only fall through if NO entry exists. This unifies discovery with extdir.hasPiExtensions and resolves the PRD-supported multi-entry package shape.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S1",
+                  "title": "Iterate pi.extensions entries in classifyDir and select first existing",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.0", "h2.2", "h2.2/h3.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/bug_cascade_map.md Bug 1 and architecture/fix_design.md §Bug 1. classifyDir case (a) in internal/discover/discover.go (~line 136-148) only stat-checks entries[0] via `entryFile := filepath.Join(path, entries[0]); if fileExists(entryFile)`. extdir.hasPiExtensions (extdir.go:393-397) correctly iterates ALL entries and returns true if ANY exists. The fix mirrors that iteration: loop over entries, break on the first fileExists hit. This also resolves the init-vs-discovery inconsistency noted in the PRD aggravating factor (extdir.HasExtensionEntry used by `weave init` already iterates all entries).\n2. INPUT: `pkg PackageJSON` from ParsePackageJSON (already called at the top of classifyDir at ~line 132). `entries := toStringSlice(pkg.Pi.Extensions)` (~line 137) yields []string of declared pi.extensions paths relative to `path`. `path` is the directory being classified. `root` is the absolute extensions dir. `hasPkg` and `perr` are already in scope.\n3. LOGIC: Replace the single-entry check:\n   ```go\n   entryFile := filepath.Join(path, entries[0])\n   if fileExists(entryFile) { ... }\n   ```\n   with a loop:\n   ```go\n   var entryFile string\n   for _, e := range entries {\n       if f := filepath.Join(path, e); fileExists(f) {\n           entryFile = f\n           break\n       }\n   }\n   if entryFile != \"\" {\n       relTag := relTagForDir(root, path)\n       jsdoc := ExtractJSDoc(entryFile)\n       ext := BuildExtension(path, entryFile, relTag, \"package\", pkg, hasPkg, jsdoc)\n       return &ext, true, false\n   }\n   // no existing entry among any declared → fall through to b/c/d/e\n   ```\n   Implement PRD §7.1 'the first existing pi.extensions entry'. No external services to mock. The existing fall-through comment ('pi.extensions names a non-existent file → NOT a package; fall through') should be updated to reflect 'no existing entry among ANY declared pi.extensions → fall through'.\n4. OUTPUT: classifyDir returns (ext, true, false) for packages with >=1 existing entry regardless of the entry's position in the array. ext.EntryFile is the first existing entry path. ext.RelTag is the dir relative to root (no .ts/.js strip — relTagForDir). ext.Kind == \"package\". When ALL entries are missing, classifyDir falls through to cases b/c/d/e unchanged (isExt=false, descend=true). This output is consumed by Index (index.go WalkDir callback) and indirectly by resolve, search, check, and ui.\n5. DOCS: [Mode A] Update the classifyDir doc comment in discover.go — the case (a) description (~lines 96-100) currently says 'EntryFile = first existing pi.extensions entry' which is the CORRECT spec but the code didn't match; update the inline comment at the fall-through (~line 146) to say 'no existing entry among ANY declared pi.extensions'. This rides WITH the work, do not create a separate docs subtask.\n6. TESTS (implicit TDD): Add TestClassifyDirPackageMultiEntryFirstMissing — package.json with pi.extensions [\"./src/MISSING.ts\", \"./src/real.ts\"], only real.ts exists. Assert isExt=true, Kind=\"package\", EntryFile ends with src/real.ts, shouldDescend=false. Add TestClassifyDirPackageMultiEntryAllMissing — [\"./a.ts\", \"./b.ts\"], neither exists. Assert isExt=false, descend=true (extends existing TestClassifyDirPackageNonExistentEntry which only tests single-entry-missing). Add an end-to-end test via walkClassified or Index verifying the multi-entry package resolves as one entry, not fragmented stray files. Use the writeFile and writePackageJSON helpers from jsdoc_test.go/extension_test.go."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M2",
+          "title": "Discovery Walk Robustness (Issues 3, 4, 6)",
+          "status": "Planned",
+          "description": "Three independent fixes all in internal/discover/index.go (the Index function and its WalkDir callback). Issue 3: an index.ts at the store root collapses the entire store into one bogus '.' entry. Issue 4: a symlinked weave_EXTENSIONS_DIR passes --path but yields an empty catalog because WalkDir cannot descend a symlinked root. Issue 6: node_modules/, .git/, and hidden files pollute the catalog. All three MUST be implemented sequentially by a single agent (same file) — the subtask dependency chain enforces this.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M2.T1",
+              "title": "Prevent root-level index.ts from collapsing the store (Issue 3)",
+              "status": "Planned",
+              "description": "The WalkDir callback in Index runs classifyDir on the walk root itself. If root contains index.ts, case (c) classifies the ROOT as a dir extension with relTag '.' (filepath.Rel(root, root)), then SkipDir prunes the ENTIRE store. Fix: skip classification when path == root — the root is always a container.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S1",
+                  "title": "Add root-skip guard in Index WalkDir callback",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.3", "h2.3/h3.2"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Bug 3 and architecture/bug_cascade_map.md Bug 4 (the root-classification issue). discover.Index (internal/discover/index.go:57-68) WalkDir callback runs classifyDir(root, path) on EVERY directory including path == root. filepath.WalkDir ALWAYS visits root first as a directory entry. If root contains index.ts, classifyDir case (c) fires: relTagForDir(root, root) = filepath.Rel(root, root) = \".\", then the callback returns filepath.SkipDir which at the ROOT level prunes the ENTIRE subtree.\n2. INPUT: `root` (absolute extensions dir path, from filepath.Abs at index.go:44) and `path` (current WalkDir entry), both available in the WalkDir callback closure.\n3. LOGIC: At the top of the `if d.IsDir()` branch (index.go:61), BEFORE calling classifyDir, add:\n   ```go\n   if path == root {\n       return nil // root is the store container, never an extension — always descend\n   }\n   ```\n   This is a 3-line guard. No mocking needed. The comparison `path == root` is exact because filepath.WalkDir passes the same root string it was given (after filepath.Abs cleaned it).\n4. OUTPUT: Index no longer produces a '.' entry when root contains index.ts. All real extensions under root are discovered normally. An index.ts at root is simply ignored (not classified as an extension, not descended into as a category folder — it is a file entry that classifyFile rejects since its base name is index.ts).\n5. DOCS: [Mode A] Add an inline comment in index.go Index() WalkDir callback explaining the root-skip rule ('the walk root is the store container, never an extension itself'). This rides WITH the work.\n6. TESTS (implicit TDD): Add TestIndexRootIndexTSDoesNotCollapse — root has index.ts + sub/x.ts. Assert len(got)==1, got[0].RelTag==\"sub/x\", and there is NO entry with RelTag \".\" . Use t.TempDir() and writeFile helper from jsdoc_test.go."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T2",
+              "title": "Skip node_modules, .git, and hidden entries during walk (Issue 6)",
+              "status": "Planned",
+              "description": "WalkDir descends into node_modules/ and .git/, discovering their contents (npm packages with index.js) as extensions. Hidden files (.secret.ts) are also discovered. Add skip logic for well-known non-extension directories and hidden entries to prevent catalog pollution.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S1",
+                  "title": "Add skipDirs set and hidden-entry skip to WalkDir callback",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.3", "h2.3/h3.5"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Bug 6. WalkDir descends into every directory including node_modules/ (created by npm install at the store root) and .git/. Hidden files (.secret.ts) pass isExtensionFile (they are *.ts, not index.*). index.go currently imports errors, io/fs, os, path/filepath, sort — it does NOT import 'strings'; you MUST add 'strings' to the import block.\n2. INPUT: The WalkDir callback in Index() (internal/discover/index.go:57), as modified by P1.M2.T1.S1 (which added the root-skip guard). `d fs.DirEntry` is the current entry; `d.Name()` gives the base name; `d.IsDir()` distinguishes dirs from files.\n3. LOGIC: Add a package-level `var skipDirs = map[string]bool{\"node_modules\": true, \".git\": true}`. In the dir branch, AFTER the root-skip guard and BEFORE classifyDir, add:\n   ```go\n   name := d.Name()\n   if skipDirs[name] || strings.HasPrefix(name, \".\") {\n       return filepath.SkipDir // prune node_modules, .git, hidden dirs\n   }\n   ```\n   In the file branch, BEFORE classifyFile, add:\n   ```go\n   if strings.HasPrefix(d.Name(), \".\") {\n       return nil // skip hidden files (.secret.ts, etc.)\n   }\n   ```\n   Add \"strings\" to the import block of index.go. No mocking needed.\n4. OUTPUT: node_modules/, .git/, hidden directories (any dir whose base name starts with '.'), and hidden files (any file whose base name starts with '.') are excluded from the catalog. Non-hidden extensions under root/ and category folders are unaffected.\n5. DOCS: [Mode A] Update the Index doc comment (index.go:~line 30) to mention that well-known non-extension directories (node_modules, .git) and hidden entries are skipped during the walk. This rides WITH the work.\n6. TESTS (implicit TDD): Add TestIndexSkipsNodeModules — root has myext.ts + node_modules/somepkg/index.js + node_modules/somepkg/package.json. Assert only 'myext' discovered. Add TestIndexSkipsHiddenFile — root has myext.ts + .secret.ts. Assert only 'myext'. Add TestIndexSkipsGitDir — root has myext.ts + .git/hooks/some.ts. Assert only 'myext'. Use writeFile helper."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T3",
+              "title": "Resolve symlinked EXTENSIONS_DIR before walking (Issue 4)",
+              "status": "Planned",
+              "description": "findEnv returns the symlink path verbatim (os.Stat follows it, filepath.Abs does not resolve it). filepath.WalkDir Lstats the root, sees ModeSymlink, and walks nothing — producing an empty catalog with exit 0 from --path but exit 1 from --list. Fix: EvalSymlinks the root in Index before walking.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T3.S1",
+                  "title": "Add EvalSymlinks resolution for walk root in Index",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.3", "h2.3/h3.3"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Bug 4 and architecture/bug_cascade_map.md Bug 6. findEnv (extdir.go:85-99) validates with os.Stat (FOLLOWS symlinks) but returns filepath.Abs(val) (does NOT resolve symlinks — deliberately, per the doc comment at extdir.go:11-14). discover.Index (index.go:44) calls filepath.Abs then os.Stat (which follows the symlink and passes the IsDir guard). But filepath.WalkDir (index.go:57) internally calls os.Lstat on the root, sees ModeSymlink (not a dir), and walks NOTHING. Result: --path prints the dir (exit 0), --list says 'no extensions found' (exit 1). The existing test TestFindEnvDoesNotResolveSymlinks (extdir_test.go:201) asserts findEnv does NOT EvalSymlinks — fixing in Index (NOT findEnv) keeps that test valid.\n2. INPUT: `extensionsDir` (the path passed to Index, possibly a symlink). `root` from filepath.Abs(extensionsDir) at index.go:44.\n3. LOGIC: After `root, err := filepath.Abs(extensionsDir)` (index.go:44) and BEFORE `info, err := os.Stat(root)` (index.go:48), add:\n   ```go\n   // Resolve symlinks on the walk root. filepath.WalkDir Lstats the root\n   // and will not descend a symlinked directory (stdlib default). os.Stat\n   // below follows the symlink and passes the IsDir guard, but WalkDir then\n   // sees ModeSymlink and walks nothing — producing an empty catalog.\n   if resolved, rerr := filepath.EvalSymlinks(root); rerr == nil {\n       root = resolved\n   }\n   ```\n   This is a no-op for non-symlinked paths (EvalSymlinks returns the same path). If EvalSymlinks fails (e.g. broken symlink chain), fall through to os.Stat which will also fail and propagate the error normally. No mocking needed.\n4. OUTPUT: Index walks the resolved target directory for symlinked roots. --list, --search, tag resolution, and check all work for a symlinked weave_EXTENSIONS_DIR. --path still shows the original symlink path (it uses extdir.Find() directly, not discover.Index()). Extension.Path and Extension.EntryFile point to the resolved target (the real filesystem location), which is correct for pi -e consumption.\n5. DOCS: [Mode A] Add an inline comment in index.go Index() explaining the symlink resolution and why it is in Index (not findEnv). This rides WITH the work.\n6. TESTS (implicit TDD): Add TestIndexSymlinkedRoot — create a real dir with a foo.ts extension, symlink the dir, call Index on the symlink path. Assert len(got)==1, got[0].RelTag==\"foo\". Guard with `if err := os.Symlink(realDir, link); err != nil { t.Skipf('symlinks not supported: %v', err) }`. Use t.TempDir() and writeFile helper."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M3",
+          "title": "Validation and Metadata Edge Cases (Issues 2, 5)",
+          "status": "Planned",
+          "description": "Two independent fixes in different files. Issue 2 (jsdoc.go): the degenerate empty JSDoc block /**/ extracts '/' as the description because the opener and closer overlap. Issue 5 (check.go): a package with all-missing pi.extensions entries is reported as an 'empty category folder' WARN instead of the §9 ERROR. Issue 5 depends on Issue 1 (M1) being fixed first, since the multi-entry fix changes what 'all missing' means.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M3.T1",
+              "title": "Fix empty single-line JSDoc /**/ extraction (Issue 2)",
+              "status": "Planned",
+              "description": "ExtractJSDoc's single-line branch strips the /** opener before finding the */ closer. For /**/, the opener (pos 0-2) and closer (pos 2-3) overlap at pos 2 — stripping /** destroys the closer's *, leaving a stray '/'. Fix: find */ on the original line first, then extract the content between opener and closer positions.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T1.S1",
+                  "title": "Fix ExtractJSDoc single-line branch for degenerate /**/ overlap",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.3", "h2.3/h3.1"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Bug 2. ExtractJSDoc (internal/discover/jsdoc.go:135-141) single-line branch (`case i == startIdx && i == closeIdx`). Current code: `rest := strings.TrimPrefix(line, \"/**\")` then `strings.Index(rest, \"*/\")`. For input \"/**/\": TrimPrefix(\"/**/\", \"/**\") = \"/\" (the opener /** consumed pos 0-2, but the closer */ starts at pos 2 — they OVERLAP). Index(\"/\", \"*/\") = -1 (no closer found in the remainder). The stray \"/\" is kept as content and returned as the description. All other empty forms (/** */ etc.) work correctly because they have a space between opener and closer.\n2. INPUT: `line` string — the first non-blank line of the file, guaranteed by steps 5-6 of ExtractJSDoc to start with exactly \"/**\" (not \"/***\") and to contain \"*/\" somewhere. `startIdx == closeIdx` (this is the single-line case — opener and closer are on the same line).\n3. LOGIC: Replace the current single-line branch with position-based extraction that operates on the ORIGINAL line:\n   ```go\n   case i == startIdx && i == closeIdx:\n       // Single-line block: extract content between opener \"/**\" (len 3)\n       // and closer \"*/\" on the ORIGINAL line. Finding \"*/\" first avoids\n       // the degenerate case where opener and closer overlap (e.g. \"/**/\"\n       // has \"*/\" at position 2, which is within the opener's 3 chars).\n       c := strings.Index(line, \"*/\")\n       if c <= 3 {\n           // \"*/\" starts at or before the opener ends -> empty content\n           // (opener /** ends at index 3 exclusive; closer at c means overlap).\n           line = \"\"\n       } else {\n           line = line[3:c] // content strictly between \"/**\" and \"*/\"\n       }\n   ```\n   Trace for \"/**/\": c=2, 2<=3 -> line=\"\". Correct.\n   Trace for \"/** desc */\": c=9, 9>3 -> line[3:9]=\" desc \" -> stripStarPrefix -> TrimSpace -> \"desc\". Correct.\n   Trace for \"/**desc*/\": c=7, 7>3 -> line[3:7]=\"desc\". Correct.\n   Trace for \"/** */\": c=4, 4>3 -> line[3:4]=\" \" -> stripStarPrefix(\" \") = \"\" (TrimLeft) -> dropped. Correct.\n   No mocking needed.\n4. OUTPUT: ExtractJSDoc returns \"\" for \"/**/\" (was \"/\"). Returns \"desc\" for \"/** desc */\" and \"/**desc*/\" (unchanged). Returns \"\" for \"/** */\" (unchanged). All existing TestExtractJSDoc cases continue to pass.\n5. DOCS: [Mode A] Update the single-line branch comment in jsdoc.go (~line 135-136) to explain why we find \"*/\" on the original line before extracting content (opener/closer overlap in degenerate blocks). This rides WITH the work.\n6. TESTS (implicit TDD): Add {\"empty-block-degenerate\", \"/**/\\n\", \"\"} to the TestExtractJSDoc table. Verify all existing cases in the table still pass. Optionally add {\"empty-block-space\", \"/** */\\n\", \"\"} to confirm the space variant is not affected."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M3.T2",
+              "title": "Surface §9 ERROR for all-missing pi.extensions in check (Issue 5)",
+              "status": "Planned",
+              "description": "After Issue 1's fix (M1), a package.json whose pi.extensions are ALL missing still falls through classifyDir to a plain dir, yields zero discover.Index entries, and check emits a misleading 'empty category folder' WARN (exit 0). The §9 requirement wants an ERROR naming the bad pi.extensions path (exit 1). Fix: in appendEmptyFolderFindings, detect a package.json with all-missing pi.extensions before the WARN and emit an ERROR instead.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T2.S1",
+                  "title": "Add allMissingPiExtensions detection and ERROR in appendEmptyFolderFindings",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": ["h2.3", "h2.3/h3.4", "h2.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Bug 5 and architecture/bug_cascade_map.md Bug 3 (the check WARN issue). After P1.M1.T1.S1 (Bug 1 fix), a package.json with at least one EXISTING pi.extensions entry is classified as a package by classifyDir case (a) and never reaches appendEmptyFolderFindings. Only the ALL-missing case falls through: classifyDir cases a (no existing entry) -> b (JSON valid, no perr) -> c/d (no index.*) -> e (plain dir, descend) -> discover.Index returns 0 entries -> appendEmptyFolderFindings (check.go:287-312) emits WARN 'empty category folder: <name>'. VERIFIED: the check package CAN range over `pkg.Pi.Extensions` (type discover.lenientAnySlice = []any) from external code — confirmed by compilation test. The check package does NOT currently have a fileExists helper; discover.fileExists and extdir.fileExists are unexported duplicates.\n2. INPUT: `child` string (the top-level subdir path being checked), from the appendEmptyFolderFindings loop in check.go. `discover.ParsePackageJSON(child)` returns (pkg discover.PackageJSON, hasPkg bool, perr error). `pkg.Pi.Extensions` is []any (rangeable; each element is an `any` that may be a string). `sub` ([]discover.Extension) from `discover.Index(child)` — already computed at check.go:298; `len(sub) == 0` triggers the empty-folder path.\n3. LOGIC: Add a helper function to check.go:\n   ```go\n   func fileExists(path string) bool {\n       info, err := os.Stat(path)\n       return err == nil && !info.IsDir()\n   }\n   func allMissingPiExtensions(dir string) []string {\n       pkg, hasPkg, perr := discover.ParsePackageJSON(dir)\n       if !hasPkg || perr != nil { return nil }\n       var missing []string\n       hasAny := false\n       for _, e := range pkg.Pi.Extensions {\n           s, ok := e.(string)\n           if !ok { continue }\n           hasAny = true\n           if !fileExists(filepath.Join(dir, s)) {\n               missing = append(missing, s)\n           } else {\n               return nil // at least one exists -> not all-missing\n           }\n       }\n       if !hasAny { return nil }\n       return missing\n   }\n   ```\n   In appendEmptyFolderFindings, BEFORE the WARN (when len(sub) == 0), call allMissingPiExtensions(child). If it returns non-nil, append an ExtensionReport with Finding{LevelError, \"pi.extensions entry does not exist: \" + strings.Join(missing, \", \")} and `continue` (skip the WARN). The existing WARN path stays for dirs with no package.json.\n4. OUTPUT: check.Check returns HasErrors()==true (exit 1 via main) for a store containing a top-level dir whose package.json has non-empty pi.extensions with ALL entries missing. The ERROR message names the missing entry paths. A dir with NO package.json still gets the WARN 'empty category folder' (unchanged). A dir with a parseable package.json but EMPTY pi.extensions still gets the WARN (unchanged — empty pi.extensions is not a broken reference).\n5. DOCS: [Mode A] Update the appendEmptyFolderFindings doc comment (check.go:~line 276) to note the pi.extensions all-missing ERROR check that precedes the empty-folder WARN. This rides WITH the work.\n6. TESTS (implicit TDD): Add TestCheckAllMissingPiExtensionsIsError — root has a top-level dir 'badpkg' with package.json {\"name\":\"badpkg\",\"pi\":{\"extensions\":[\"./missing.ts\"]}} and NO entry files. Assert rep.HasErrors()==true, rep.Errors>=1, and finding(rep, \"pi.extensions entry does not exist\") returns a Finding with Level==LevelError. Also assert the WARN 'empty category folder' is NOT present for badpkg. Verify TestCheckEmptyCategoryFolder still passes (a dir with NO package.json still gets the WARN). Use the lower-level fixture pattern from TestCheckUnparseablePackageJSON (write files directly + findExt or discover.Index)."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M4",
+          "title": "Sync Changeset-Level Documentation",
+          "status": "Planned",
+          "description": "Final documentation sweep to ensure README.md and any overview docs accurately reflect the post-fix discovery behavior. Per SOW §5 Mode B: cross-cutting docs that only make sense once the whole changeset is in place ride as a final task with dependencies on all implementing subtasks.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M4.T1",
+              "title": "Sync changeset-level documentation",
+              "status": "Planned",
+              "description": "Review README.md for accuracy against the post-fix behavior. The primary update is documenting that node_modules/, .git/, and hidden entries are skipped during discovery (Issue 6). Verify the package-kind description is consistent with the fixed classifyDir. No new doc files — update existing README.md content only.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T1.S1",
+                  "title": "Update README.md to reflect post-fix discovery behavior",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S1", "P1.M2.T1.S1", "P1.M2.T2.S1", "P1.M2.T3.S1", "P1.M3.T1.S1", "P1.M3.T2.S1"],
+                  "prd_selectors": ["h2.0", "h2.4"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Documentation plan. The README.md 'How extensions are organized' section accurately describes the three extension kinds. For Issue 1 (multi-entry packages), the README was ALREADY correct ('a package.json whose pi.extensions array names at least one existing entry') — the code was wrong, not the docs; no change needed there. For Issue 6 (skip node_modules/.git/hidden), the README does NOT currently mention any skip rules — this is the primary addition. Issues 2, 3, 4, 5 are internal fixes with no user-facing README impact beyond what Mode A doc comments already cover.\n2. INPUT: README.md at project root. All completed subtask changes (P1.M1.T1.S1 through P1.M3.T2.S1). The post-fix behavior: classifyDir iterates all pi.extensions entries; Index skips root classification, node_modules/.git/hidden entries, and resolves symlinked roots; check reports ERROR for all-missing pi.extensions; ExtractJSDoc handles degenerate /**/.\n3. LOGIC: Review README.md section by section:\n   - 'How extensions are organized': Add a note (1-2 sentences) that `node_modules/`, `.git/`, and hidden files (names starting with `.`) are skipped during discovery. This can go after the 'Once a directory is recognized...' paragraph or in a new bullet under the extension-kinds list.\n   - Verify the package kind description ('names at least one existing entry') matches the fixed classifyDir (it does — no change needed, but confirm).\n   - Verify the 'How weave finds the store' section is consistent with the symlink fix (the env var rule now works with symlinked paths — the description is still accurate, optionally note that symlinks are followed).\n   - Do NOT add documentation for Bugs 2, 3, 5 — these are internal edge-case fixes with no user-facing surface.\n   - Do NOT create new doc files. Update existing README.md only.\n4. OUTPUT: README.md reflects the post-fix discovery behavior. No stale or misleading claims. A reader knows that node_modules/.git/hidden are excluded from discovery.\n5. DOCS: This IS the documentation task (Mode B — changeset-level sweep per SOW §5). No further doc subtask needed."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
