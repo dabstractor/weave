@@ -6,3 +6,6 @@
 .DS_Store
 node_modules/
 .env
+
+# Subagent harness runtime artifacts (transcripts, inputs, outputs)
+.pi-subagents/

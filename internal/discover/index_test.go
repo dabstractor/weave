@@ -3,6 +3,7 @@ package discover
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -252,5 +253,116 @@ func TestIndexIgnoresStrayFiles(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].RelTag != "real/gate" {
 		t.Fatalf("got=%v; want exactly one extension 'real/gate' (stray files/subdirs ignored)", relTags(got))
+	}
+}
+
+// TestIndexRootIndexTSDoesNotCollapse reproduces Issue 3: a stray index.ts at the
+// store ROOT must NOT collapse the whole store into a single "." extension.
+// Before the root-skip guard, classifyDir ran on the root (which contains
+// index.ts → case c), computed relTag = filepath.Rel(root, root) = ".", and
+// returned SkipDir — pruning the ENTIRE subtree so every real extension
+// vanished. After the guard, the root is always descended and sub/x is
+// discovered normally.
+func TestIndexRootIndexTSDoesNotCollapse(t *testing.T) {
+	root := t.TempDir()
+	// A stray index.ts at the ROOT (the footgun). Must NOT make the root an extension.
+	writeFile(t, root, "index.ts", "/** root scratch file. */\n")
+	// A real extension nested one level down. Must survive.
+	writeFile(t, filepath.Join(root, "sub"), "x.ts", "/** sub extension. */\n")
+
+	got, err := Index(root)
+	if err != nil {
+		t.Fatalf("err=%v; want nil (valid store; root index.ts is not an error)", err)
+	}
+
+	// Exactly ONE entry — the real extension. NOT zero (whole-store collapse) and
+	// NOT one-with-tag-"." (the collapsed-store signature).
+	if len(got) != 1 {
+		t.Fatalf("len(got)=%d; want 1 (root index.ts must not collapse the store). entries=%v",
+			len(got), relTags(got))
+	}
+	if got[0].RelTag != "sub/x" {
+		t.Errorf("RelTag=%q; want 'sub/x' (the real extension under the root)", got[0].RelTag)
+	}
+
+	// The bug's signature: an entry tagged ".". Guard against it explicitly so a
+	// future regression is caught with a clear message, not just a wrong count.
+	for _, e := range got {
+		if e.RelTag == "." {
+			t.Errorf("found a '.' entry (the root-collapse signature); entries=%v", relTags(got))
+		}
+	}
+}
+
+// --- PRD Issue 6: node_modules, .git, and hidden entries are skipped (P1.M2.T2.S1) ---
+
+// TestIndexSkipsNodeModules reproduces Issue 6: a top-level node_modules/ (from
+// `npm install` at the store root) must NOT contribute its nested packages as
+// extensions. The WalkDir callback prunes node_modules via filepath.SkipDir.
+func TestIndexSkipsNodeModules(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "myext.ts", "/** my ext. */\n")
+	// A nested npm package — must NOT become an extension.
+	writeFile(t, filepath.Join(root, "node_modules", "somepkg"), "index.js",
+		"/** dep. */\nexport default function(){}\n")
+	writeFile(t, filepath.Join(root, "node_modules", "somepkg"), "package.json",
+		`{"name":"somepkg"}`)
+	got, err := Index(root)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	tags := relTags(got)
+	if len(got) != 1 || got[0].RelTag != "myext" {
+		t.Fatalf("got=%v; want exactly one extension 'myext' (node_modules pruned)", tags)
+	}
+	// Guard against the spurious entry by name.
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, "node_modules/") {
+			t.Errorf("node_modules leaked into catalog: %q (must be pruned)", tag)
+		}
+	}
+}
+
+// TestIndexSkipsHiddenFile reproduces Issue 6: a hidden file (.secret.ts) must
+// NOT become an extension. The file-skip returns nil (NOT SkipDir), so the
+// sibling myext.ts is STILL discovered.
+func TestIndexSkipsHiddenFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "myext.ts", "/** my ext. */\n")
+	writeFile(t, root, ".secret.ts", "/** secret. */\nexport default function(){}\n")
+	got, err := Index(root)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	tags := relTags(got)
+	if len(got) != 1 || got[0].RelTag != "myext" {
+		t.Fatalf("got=%v; want exactly one extension 'myext' (.secret.ts skipped, myext.ts kept)", tags)
+	}
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, ".") {
+			t.Errorf("hidden file leaked into catalog: %q", tag)
+		}
+	}
+}
+
+// TestIndexSkipsGitDir reproduces Issue 6: a .git/ directory (git internals)
+// must NOT contribute its artifacts as extensions. Pruned via SkipDir.
+func TestIndexSkipsGitDir(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "myext.ts", "/** my ext. */\n")
+	// A .ts-like artifact inside .git/ — must NOT become an extension.
+	writeFile(t, filepath.Join(root, ".git", "hooks"), "some.ts", "// git hook\n")
+	got, err := Index(root)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	tags := relTags(got)
+	if len(got) != 1 || got[0].RelTag != "myext" {
+		t.Fatalf("got=%v; want exactly one extension 'myext' (.git pruned)", tags)
+	}
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, ".git/") || strings.HasPrefix(tag, ".git") {
+			t.Errorf(".git leaked into catalog: %q", tag)
+		}
 	}
 }

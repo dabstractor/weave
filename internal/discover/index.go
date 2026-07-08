@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Index walks the extensions directory at extensionsDir and returns every
@@ -21,10 +22,16 @@ import (
 // dispatches each entry to classifyFile (files) or classifyDir (dirs). When a
 // dir is recognized as an extension, the entry is emitted AND the callback
 // returns filepath.SkipDir to prune its subtree — preventing double-counting of
-// a dir extension's internal .ts files (e.g. git-checkpoint/utils.ts) and
-// avoiding descent into node_modules/. When a dir is plain (category folder),
-// the callback returns nil so WalkDir descends naturally. File entries always
-// return nil (NOT SkipDir — SkipDir on a file skips siblings).
+// a dir extension's internal .ts files (e.g. git-checkpoint/utils.ts). When a
+// dir is plain (category folder), the callback returns nil so WalkDir descends
+// naturally. File entries always return nil (NOT SkipDir — SkipDir on a file
+// skips siblings).
+//
+// Well-known non-extension directories (node_modules, .git) and hidden entries
+// (any file or directory whose base name starts with '.') are skipped during
+// the walk (PRD Issue 6): directories are pruned via filepath.SkipDir, hidden
+// files are skipped individually (return nil, not SkipDir, so sibling
+// extensions are still discovered).
 //
 // Error policy (skilldozer pattern, research/walkdir_skipdir_semantics.md):
 //   - extensionsDir missing, unreadable, or not a directory -> returned as the
@@ -40,6 +47,17 @@ import (
 //
 // An empty extensions dir (no entries anywhere) yields a nil slice and a nil
 // error; callers test with len() (e.g. --list exits 1 "if no extensions found").
+
+// skipDirs are well-known directories that are never extension containers or
+// category folders: node_modules holds npm dependencies (created by `npm
+// install` at the store root to share deps across package extensions), and .git
+// holds git internals. Their contents are never user-authored extensions, so
+// the WalkDir callback prunes them via filepath.SkipDir (PRD Issue 6).
+var skipDirs = map[string]bool{
+	"node_modules": true,
+	".git":         true,
+}
+
 func Index(extensionsDir string) ([]Extension, error) {
 	root, err := filepath.Abs(extensionsDir)
 	if err != nil {
@@ -59,6 +77,23 @@ func Index(extensionsDir string) ([]Extension, error) {
 			return nil // per-entry unreadable → skip, keep walking
 		}
 		if d.IsDir() {
+			// The walk root is the store container, never an extension itself. Without
+			// this guard, an index.ts at the root would classify the root as a dir
+			// extension (relTag "."), then SkipDir would prune the ENTIRE store — every
+			// real extension would become invisible. filepath.WalkDir visits the root
+			// first as a directory entry, so this guard fires exactly once, for that
+			// single visit, and always descends.
+			if path == root {
+				return nil // root is the store container, never an extension — always descend
+			}
+			// Skip well-known non-extension directories (node_modules, .git) and
+			// hidden directories (base name starts with '.'). These never contain
+			// user-authored extensions; descending would pollute the catalog (PRD
+			// Issue 6). SkipDir prunes the entire subtree.
+			name := d.Name()
+			if skipDirs[name] || strings.HasPrefix(name, ".") {
+				return filepath.SkipDir // prune node_modules, .git, hidden dirs
+			}
 			ext, isExt, descend := classifyDir(root, path)
 			if isExt {
 				result = append(result, *ext)
@@ -67,6 +102,13 @@ func Index(extensionsDir string) ([]Extension, error) {
 				return filepath.SkipDir // prune subtree (load-bearing recursion rule)
 			}
 			return nil // plain category dir → descend
+		}
+		// Skip hidden files (.secret.ts, .DS_Store-as-.ts, editor dotfiles).
+		// return nil (NOT SkipDir): SkipDir on a file prunes the REMAINING
+		// siblings, and '.' sorts first lexically, so SkipDir would hide real
+		// extensions like myext.ts that sort after the hidden file.
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
 		}
 		ext, ok := classifyFile(root, path)
 		if ok {

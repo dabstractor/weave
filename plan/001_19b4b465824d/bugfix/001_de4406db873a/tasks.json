@@ -43,7 +43,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Discovery Walk Robustness (Issues 3, 4, 6)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Three independent fixes all in internal/discover/index.go (the Index function and its WalkDir callback). Issue 3: an index.ts at the store root collapses the entire store into one bogus '.' entry. Issue 4: a symlinked weave_EXTENSIONS_DIR passes --path but yields an empty catalog because WalkDir cannot descend a symlinked root. Issue 6: node_modules/, .git/, and hidden files pollute the catalog. All three MUST be implemented sequentially by a single agent (same file) — the subtask dependency chain enforces this.",
           "tasks": [
             {
@@ -72,14 +72,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Skip node_modules, .git, and hidden entries during walk (Issue 6)",
-              "status": "Planned",
+              "status": "Complete",
               "description": "WalkDir descends into node_modules/ and .git/, discovering their contents (npm packages with index.js) as extensions. Hidden files (.secret.ts) are also discovered. Add skip logic for well-known non-extension directories and hidden entries to prevent catalog pollution.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Add skipDirs set and hidden-entry skip to WalkDir callback",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -96,14 +96,14 @@
               "type": "Task",
               "id": "P1.M2.T3",
               "title": "Resolve symlinked EXTENSIONS_DIR before walking (Issue 4)",
-              "status": "Planned",
+              "status": "Ready",
               "description": "findEnv returns the symlink path verbatim (os.Stat follows it, filepath.Abs does not resolve it). filepath.WalkDir Lstats the root, sees ModeSymlink, and walks nothing — producing an empty catalog with exit 0 from --path but exit 1 from --list. Fix: EvalSymlinks the root in Index before walking.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T3.S1",
                   "title": "Add EvalSymlinks resolution for walk root in Index",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M2.T2.S1"
@@ -129,14 +129,14 @@
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Fix empty single-line JSDoc /**/ extraction (Issue 2)",
-              "status": "Planned",
+              "status": "Ready",
               "description": "ExtractJSDoc's single-line branch strips the /** opener before finding the */ closer. For /**/, the opener (pos 0-2) and closer (pos 2-3) overlap at pos 2 — stripping /** destroys the closer's *, leaving a stray '/'. Fix: find */ on the original line first, then extract the content between opener and closer positions.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Fix ExtractJSDoc single-line branch for degenerate /**/ overlap",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Bug 2. ExtractJSDoc (internal/discover/jsdoc.go:135-141) single-line branch (`case i == startIdx && i == closeIdx`). Current code: `rest := strings.TrimPrefix(line, \"/**\")` then `strings.Index(rest, \"*/\")`. For input \"/**/\": TrimPrefix(\"/**/\", \"/**\") = \"/\" (the opener /** consumed pos 0-2, but the closer */ starts at pos 2 — they OVERLAP). Index(\"/\", \"*/\") = -1 (no closer found in the remainder). The stray \"/\" is kept as content and returned as the description. All other empty forms (/** */ etc.) work correctly because they have a space between opener and closer.\n2. INPUT: `line` string — the first non-blank line of the file, guaranteed by steps 5-6 of ExtractJSDoc to start with exactly \"/**\" (not \"/***\") and to contain \"*/\" somewhere. `startIdx == closeIdx` (this is the single-line case — opener and closer are on the same line).\n3. LOGIC: Replace the current single-line branch with position-based extraction that operates on the ORIGINAL line:\n   ```go\n   case i == startIdx && i == closeIdx:\n       // Single-line block: extract content between opener \"/**\" (len 3)\n       // and closer \"*/\" on the ORIGINAL line. Finding \"*/\" first avoids\n       // the degenerate case where opener and closer overlap (e.g. \"/**/\"\n       // has \"*/\" at position 2, which is within the opener's 3 chars).\n       c := strings.Index(line, \"*/\")\n       if c <= 3 {\n           // \"*/\" starts at or before the opener ends -> empty content\n           // (opener /** ends at index 3 exclusive; closer at c means overlap).\n           line = \"\"\n       } else {\n           line = line[3:c] // content strictly between \"/**\" and \"*/\"\n       }\n   ```\n   Trace for \"/**/\": c=2, 2<=3 -> line=\"\". Correct.\n   Trace for \"/** desc */\": c=9, 9>3 -> line[3:9]=\" desc \" -> stripStarPrefix -> TrimSpace -> \"desc\". Correct.\n   Trace for \"/**desc*/\": c=7, 7>3 -> line[3:7]=\"desc\". Correct.\n   Trace for \"/** */\": c=4, 4>3 -> line[3:4]=\" \" -> stripStarPrefix(\" \") = \"\" (TrimLeft) -> dropped. Correct.\n   No mocking needed.\n4. OUTPUT: ExtractJSDoc returns \"\" for \"/**/\" (was \"/\"). Returns \"desc\" for \"/** desc */\" and \"/**desc*/\" (unchanged). Returns \"\" for \"/** */\" (unchanged). All existing TestExtractJSDoc cases continue to pass.\n5. DOCS: [Mode A] Update the single-line branch comment in jsdoc.go (~line 135-136) to explain why we find \"*/\" on the original line before extracting content (opener/closer overlap in degenerate blocks). This rides WITH the work.\n6. TESTS (implicit TDD): Add {\"empty-block-degenerate\", \"/**/\\n\", \"\"} to the TestExtractJSDoc table. Verify all existing cases in the table still pass. Optionally add {\"empty-block-space\", \"/** */\\n\", \"\"} to confirm the space variant is not affected.",
