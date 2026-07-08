@@ -1941,3 +1941,22 @@ func TestRunModifiersOnlyNoMode(t *testing.T) {
 		t.Errorf("stderr=%q; want the usage block", errOut.String())
 	}
 }
+
+// --- example asset byte-equality (P1.M6.T1.S1) ---
+//
+// The repo asset extensions/example.ts MUST equal the compiled-in
+// exampleExtensionTemplate byte-for-byte (PRD §11 == main.go L77 contract):
+// both are the one shipped example, and setupStore writes the constant into
+// an empty store's example.ts, so any drift between them would mean `weave
+// init` seeds a different example than the repo ships. This test makes that
+// drift a build-time failure.
+func TestExampleAssetEqualsTemplate(t *testing.T) {
+	got, err := os.ReadFile("extensions/example.ts")
+	if err != nil {
+		t.Skipf("extensions/example.ts not present in this checkout: %v", err)
+	}
+	if string(got) != exampleExtensionTemplate {
+		t.Errorf("extensions/example.ts drifts from exampleExtensionTemplate (PRD §11)\nwant %q\nhave %q",
+			exampleExtensionTemplate, string(got))
+	}
+}

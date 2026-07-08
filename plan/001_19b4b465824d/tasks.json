@@ -545,14 +545,14 @@
               "type": "Task",
               "id": "P1.M6.T1",
               "title": "Example extension + acceptance criteria (PRD §11, §13)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Ship the one example extension and verify every §13 acceptance gate passes end-to-end.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T1.S1",
                   "title": "extensions/example.ts + run §13 acceptance verification",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M5.T1.S1"
@@ -570,14 +570,14 @@
               "type": "Task",
               "id": "P1.M6.T2",
               "title": "install.sh (PRD §12.1)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Create the install script that builds the binary with version ldflags and symlinks it into PATH.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T2.S1",
                   "title": "install.sh (build + symlink + PATH check + verify)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M6.T1.S1"
