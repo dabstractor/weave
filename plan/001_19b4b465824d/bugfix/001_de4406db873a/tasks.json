@@ -122,21 +122,21 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Validation and Metadata Edge Cases (Issues 2, 5)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Two independent fixes in different files. Issue 2 (jsdoc.go): the degenerate empty JSDoc block /**/ extracts '/' as the description because the opener and closer overlap. Issue 5 (check.go): a package with all-missing pi.extensions entries is reported as an 'empty category folder' WARN instead of the §9 ERROR. Issue 5 depends on Issue 1 (M1) being fixed first, since the multi-entry fix changes what 'all missing' means.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Fix empty single-line JSDoc /**/ extraction (Issue 2)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "ExtractJSDoc's single-line branch strips the /** opener before finding the */ closer. For /**/, the opener (pos 0-2) and closer (pos 2-3) overlap at pos 2 — stripping /** destroys the closer's *, leaving a stray '/'. Fix: find */ on the original line first, then extract the content between opener and closer positions.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Fix ExtractJSDoc single-line branch for degenerate /**/ overlap",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Bug 2. ExtractJSDoc (internal/discover/jsdoc.go:135-141) single-line branch (`case i == startIdx && i == closeIdx`). Current code: `rest := strings.TrimPrefix(line, \"/**\")` then `strings.Index(rest, \"*/\")`. For input \"/**/\": TrimPrefix(\"/**/\", \"/**\") = \"/\" (the opener /** consumed pos 0-2, but the closer */ starts at pos 2 — they OVERLAP). Index(\"/\", \"*/\") = -1 (no closer found in the remainder). The stray \"/\" is kept as content and returned as the description. All other empty forms (/** */ etc.) work correctly because they have a space between opener and closer.\n2. INPUT: `line` string — the first non-blank line of the file, guaranteed by steps 5-6 of ExtractJSDoc to start with exactly \"/**\" (not \"/***\") and to contain \"*/\" somewhere. `startIdx == closeIdx` (this is the single-line case — opener and closer are on the same line).\n3. LOGIC: Replace the current single-line branch with position-based extraction that operates on the ORIGINAL line:\n   ```go\n   case i == startIdx && i == closeIdx:\n       // Single-line block: extract content between opener \"/**\" (len 3)\n       // and closer \"*/\" on the ORIGINAL line. Finding \"*/\" first avoids\n       // the degenerate case where opener and closer overlap (e.g. \"/**/\"\n       // has \"*/\" at position 2, which is within the opener's 3 chars).\n       c := strings.Index(line, \"*/\")\n       if c <= 3 {\n           // \"*/\" starts at or before the opener ends -> empty content\n           // (opener /** ends at index 3 exclusive; closer at c means overlap).\n           line = \"\"\n       } else {\n           line = line[3:c] // content strictly between \"/**\" and \"*/\"\n       }\n   ```\n   Trace for \"/**/\": c=2, 2<=3 -> line=\"\". Correct.\n   Trace for \"/** desc */\": c=9, 9>3 -> line[3:9]=\" desc \" -> stripStarPrefix -> TrimSpace -> \"desc\". Correct.\n   Trace for \"/**desc*/\": c=7, 7>3 -> line[3:7]=\"desc\". Correct.\n   Trace for \"/** */\": c=4, 4>3 -> line[3:4]=\" \" -> stripStarPrefix(\" \") = \"\" (TrimLeft) -> dropped. Correct.\n   No mocking needed.\n4. OUTPUT: ExtractJSDoc returns \"\" for \"/**/\" (was \"/\"). Returns \"desc\" for \"/** desc */\" and \"/**desc*/\" (unchanged). Returns \"\" for \"/** */\" (unchanged). All existing TestExtractJSDoc cases continue to pass.\n5. DOCS: [Mode A] Update the single-line branch comment in jsdoc.go (~line 135-136) to explain why we find \"*/\" on the original line before extracting content (opener/closer overlap in degenerate blocks). This rides WITH the work.\n6. TESTS (implicit TDD): Add {\"empty-block-degenerate\", \"/**/\\n\", \"\"} to the TestExtractJSDoc table. Verify all existing cases in the table still pass. Optionally add {\"empty-block-space\", \"/** */\\n\", \"\"} to confirm the space variant is not affected.",
@@ -151,14 +151,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Surface §9 ERROR for all-missing pi.extensions in check (Issue 5)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "After Issue 1's fix (M1), a package.json whose pi.extensions are ALL missing still falls through classifyDir to a plain dir, yields zero discover.Index entries, and check emits a misleading 'empty category folder' WARN (exit 0). The §9 requirement wants an ERROR naming the bad pi.extensions path (exit 1). Fix: in appendEmptyFolderFindings, detect a package.json with all-missing pi.extensions before the WARN and emit an ERROR instead.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Add allMissingPiExtensions detection and ERROR in appendEmptyFolderFindings",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"

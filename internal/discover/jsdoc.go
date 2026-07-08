@@ -133,12 +133,18 @@ func ExtractJSDoc(path string) string {
 		line := lines[i]
 		switch {
 		case i == startIdx && i == closeIdx:
-			// Single-line block: strip "/**" prefix, then cut at first "*/".
-			rest := strings.TrimPrefix(line, "/**")
-			if c := strings.Index(rest, "*/"); c >= 0 {
-				rest = rest[:c]
+			// Single-line block: find "*/" on the ORIGINAL line BEFORE extracting
+			// content, so the opener/closer overlap in degenerate blocks (e.g. "/**/"
+			// has "*/" at index 2, within the opener's first 3 chars) is handled. For
+			// "/**/" the closer sits inside the opener "/**" -> empty content.
+			c := strings.Index(line, "*/")
+			if c <= 3 {
+				// "*/" starts at or before the opener "/**" ends (index 3 exclusive)
+				// -> opener and closer overlap -> empty content.
+				line = ""
+			} else {
+				line = line[3:c] // content strictly between "/**" and "*/"
 			}
-			line = rest
 		case i == startIdx:
 			// Opener line of a multi-line block: drop the "/**" prefix.
 			line = strings.TrimPrefix(line, "/**")

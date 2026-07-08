@@ -87,6 +87,10 @@ func TestExtractJSDoc(t *testing.T) {
 		{"empty-file", "", ""},
 		// 14. JSDoc with a blank star-only inner line (dropped).
 		{"jsdoc-blank-inner", "/**\n * a\n *\n * b\n */\n", "a b"},
+		// 15. Empty single-line JSDoc, degenerate opener/closer overlap (Issue 2).
+		{"empty-block-degenerate", "/**/\n", ""},
+		// 16. Empty single-line JSDoc with a space (regression guard; already worked).
+		{"empty-block-space", "/** */\n", ""},
 	}
 
 	for _, c := range cases {
