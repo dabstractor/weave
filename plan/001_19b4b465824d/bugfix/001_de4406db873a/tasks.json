@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Bug Fix Sprint: Discovery Edge Cases",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Fix 6 issues (1 Major, 5 Minor) found during creative end-to-end QA of the weave implementation. Issue 1 (Major) silently breaks a PRD-supported multi-entry package shape and cascades into spurious errors. Issues 2-6 are edge cases and footguns in JSDoc extraction, root-level index.ts handling, symlinked store paths, check validation, and node_modules/hidden-file discovery. All PRD §13 acceptance gates currently pass; these fixes close the remaining gaps without changing any public API.",
       "milestones": [
         {
@@ -43,21 +43,21 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Discovery Walk Robustness (Issues 3, 4, 6)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Three independent fixes all in internal/discover/index.go (the Index function and its WalkDir callback). Issue 3: an index.ts at the store root collapses the entire store into one bogus '.' entry. Issue 4: a symlinked weave_EXTENSIONS_DIR passes --path but yields an empty catalog because WalkDir cannot descend a symlinked root. Issue 6: node_modules/, .git/, and hidden files pollute the catalog. All three MUST be implemented sequentially by a single agent (same file) — the subtask dependency chain enforces this.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Prevent root-level index.ts from collapsing the store (Issue 3)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "The WalkDir callback in Index runs classifyDir on the walk root itself. If root contains index.ts, case (c) classifies the ROOT as a dir extension with relTag '.' (filepath.Rel(root, root)), then SkipDir prunes the ENTIRE store. Fix: skip classification when path == root — the root is always a container.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Add root-skip guard in Index WalkDir callback",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See architecture/fix_design.md §Bug 3 and architecture/bug_cascade_map.md Bug 4 (the root-classification issue). discover.Index (internal/discover/index.go:57-68) WalkDir callback runs classifyDir(root, path) on EVERY directory including path == root. filepath.WalkDir ALWAYS visits root first as a directory entry. If root contains index.ts, classifyDir case (c) fires: relTagForDir(root, root) = filepath.Rel(root, root) = \".\", then the callback returns filepath.SkipDir which at the ROOT level prunes the ENTIRE subtree.\n2. INPUT: `root` (absolute extensions dir path, from filepath.Abs at index.go:44) and `path` (current WalkDir entry), both available in the WalkDir callback closure.\n3. LOGIC: At the top of the `if d.IsDir()` branch (index.go:61), BEFORE calling classifyDir, add:\n   ```go\n   if path == root {\n       return nil // root is the store container, never an extension — always descend\n   }\n   ```\n   This is a 3-line guard. No mocking needed. The comparison `path == root` is exact because filepath.WalkDir passes the same root string it was given (after filepath.Abs cleaned it).\n4. OUTPUT: Index no longer produces a '.' entry when root contains index.ts. All real extensions under root are discovered normally. An index.ts at root is simply ignored (not classified as an extension, not descended into as a category folder — it is a file entry that classifyFile rejects since its base name is index.ts).\n5. DOCS: [Mode A] Add an inline comment in index.go Index() WalkDir callback explaining the root-skip rule ('the walk root is the store container, never an extension itself'). This rides WITH the work.\n6. TESTS (implicit TDD): Add TestIndexRootIndexTSDoesNotCollapse — root has index.ts + sub/x.ts. Assert len(got)==1, got[0].RelTag==\"sub/x\", and there is NO entry with RelTag \".\" . Use t.TempDir() and writeFile helper from jsdoc_test.go.",

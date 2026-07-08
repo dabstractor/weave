@@ -43,6 +43,7 @@ import (
 	"strings"
 
 	"github.com/dabstractor/weave/internal/discover"
+	"github.com/dabstractor/weave/internal/extdir"
 )
 
 // Severity ranks a finding. OK < WARN < ERROR. Exported so main (M4.T3.S1) can
@@ -322,10 +323,19 @@ func allMissingPiExtensions(dir string) []string {
 
 // appendEmptyFolderFindings walks the top-level children of dir and appends a
 // WARN for each plain category folder that contains ZERO discoverable entries at
-// any depth (PRD §9). A top-level subdir that IS a resolvable extension yields
-// ≥1 discover.Index entry and is therefore NOT flagged — discover.Index is
-// reused here so the resolvability semantics stay identical to Index's
-// classify-then-descend rule (no duplicated logic).
+// any depth (PRD §9). A top-level subdir that IS itself a resolvable extension
+// (a dir extension with index.ts/index.js, or a package extension whose
+// package.json declares ≥1 existing pi.extensions entry) is an ENTRY, not an
+// empty category folder, and is excluded BEFORE the discover.Index call via
+// extdir.HasExtensionEntry. That gate is required because the Issue 3 root guard
+// in discover.Index (path == root → never classify, always descend) means
+// discover.Index(<dir ext with only index.ts>) returns 0 entries — the entry's
+// own index.ts is a dir-entry marker handled by the parent walk, never by a
+// walk rooted at the entry dir. Without the HasExtensionEntry gate, such an
+// entry would be wrongly flagged empty. extdir.HasExtensionEntry is the §8.2
+// auto-detect predicate and uses the same §7.1 entry-recognition semantics as
+// discovery (index.ts/index.js at the dir root, or a resolvable pi.extensions
+// entry), so the two agree.
 //
 // Before emitting the WARN, the function checks whether the empty folder has a
 // package.json whose pi.extensions are ALL missing (a §9 ERROR — a broken entry
@@ -349,6 +359,19 @@ func appendEmptyFolderFindings(rep *Report, dir string) {
 			continue // only directories can be empty category folders
 		}
 		child := filepath.Join(dir, e.Name())
+		// A top-level subdir that is ITSELF a resolvable extension (a dir
+		// extension with index.ts/index.js, or a package extension whose
+		// package.json declares ≥1 existing pi.extensions entry) is NOT an
+		// empty category folder — it is an entry. discover.Index(child) would
+		// return 0 entries for a single-entry dir extension, because the
+		// Issue 3 root guard treats the walk root as a container and the
+		// entry's own index.ts is never classified. So we must exclude such
+		// dirs BEFORE calling discover.Index. HasExtensionEntry is the §8.2
+		// auto-detect predicate and uses the same §7.1 entry-recognition
+		// semantics as discovery, so the two agree.
+		if extdir.HasExtensionEntry(child) {
+			continue // child is itself an entry → not an empty category folder
+		}
 		sub, ierr := discover.Index(child)
 		if ierr != nil {
 			continue // an unreadable subdir is not "empty" (it errored); skip
