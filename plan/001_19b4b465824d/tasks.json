@@ -67,7 +67,7 @@
               "type": "Task",
               "id": "P1.M1.T3",
               "title": "internal/extdir — locate the extensions dir (PRD §8.3 priority order)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Implement the hardest, most failure-prone component: resolving the extensions/ directory via the 5-rule priority order (first hit wins). Must be symlink-aware so symlink installs resolve back to the repo. Port skilldozer's internal/skillsdir nearly verbatim — only the env-var name, sibling dir name (`extensions`), and the store predicate change.",
               "subtasks": [
                 {
@@ -91,7 +91,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S2",
                   "title": "Config-based resolution (rule 2) + sibling-of-binary (rule 3, symlink-aware)",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T3.S1"
@@ -109,7 +109,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S3",
                   "title": "Walk-up-from-cwd (rule 4) + Find() combiner + ErrNotFound",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T3.S2"

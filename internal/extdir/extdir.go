@@ -3,13 +3,14 @@
 // It implements the PRD §8.3 priority order (first hit wins):
 //
 //  1. weave_EXTENSIONS_DIR env var — override; if set and an existing dir, use it as-is.
-//  2. Config file `store` (PRD §8.1) — the primary, set by `weave init`.   [S2]
-//  3. Sibling of the running binary (symlink-aware via os.Executable + EvalSymlinks). [S2]
+//  2. Config file `store` (PRD §8.1) — the primary, set by `weave init`.  (findConfig)
+//  3. Sibling of the running binary (symlink-aware via os.Executable + EvalSymlinks). (findSibling)
 //  4. Walk up from the current working directory.                          [S3]
 //  5. None ⇒ unconfigured: Find returns ErrNotFound.                       [S3]
 //
-// THIS FILE (P1.M1.T3.S1) implements rule 1 (findEnv) and the HasExtensionEntry
-// predicate. Find() and rules 2-4 are added by S2/S3.
+// THIS FILE (P1.M1.T3.S1 + S2) implements rules 1-3 (findEnv, findConfig,
+// findSibling) and the HasExtensionEntry predicate. Rule 4 (findWalkUp) and
+// the Find() combiner are added by S3.
 //
 // findEnv reads weave_EXTENSIONS_DIR; if it names an existing directory the path is
 // returned as-is, only made absolute/clean via filepath.Abs — NEVER through
@@ -32,6 +33,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/dabstractor/weave/internal/config"
 )
 
 // Source identifies which §8.3 rule located the extensions directory. It is
@@ -97,6 +100,109 @@ func findEnv() (dir string, src Source, found bool) {
 		return "", 0, false // cwd unresolvable -> let the next rule try
 	}
 	return abs, SourceEnv, true
+}
+
+// findConfig implements PRD §8.3 rule 2 — the config file's `store` key (PRD §8.1).
+//
+// It is the primary discovery rule, set by `weave init` (P1.M4.T4). config.Path()
+// gives the one fixed, well-known bootstrap path ($weave_CONFIG or
+// $XDG_CONFIG_HOME/weave/config.yaml); config.Load() reads it. findConfig treats ANY
+// error from either as "not yet configured -> fall through" — PRD §8.1: a
+// missing/unreadable config NEVER hard-errors.
+//
+// A relative `store` is resolved against the config file's own directory (PRD §8.1:
+// store may be relative to the config file), NOT against cwd. The resolved store
+// must name an existing directory or the rule misses.
+//
+// weave-vs-skilldozer note: weave's config.Load is a HAND-ROLLED line scanner, NOT
+// yaml.v3, so it NEVER returns a "malformed YAML" hard error — a present-but-garbage
+// file with no "store:" line returns File{Store: ""}, nil, and the f.Store == ""
+// branch below handles it. skilldozer's findConfig had to convert a yaml.v3 hard
+// error into a fall-through; weave does not (the case is impossible by construction).
+//
+// Returns (absStore, SourceConfig, true) on a hit; ("", 0, false) otherwise so
+// Find() (S3) can fall through to the sibling rule. Never errors (locked
+// per-rule shape).
+func findConfig() (dir string, src Source, found bool) {
+	p, err := config.Path()
+	if err != nil {
+		return "", 0, false // no bootstrap path (e.g. relative $XDG_CONFIG_HOME) -> fall through
+	}
+	f, err := config.Load(p)
+	if err != nil {
+		return "", 0, false // missing/unreadable -> "not yet configured" -> fall through
+	}
+	if f.Store == "" {
+		return "", 0, false // no `store` key (or empty value) -> fall through
+	}
+	var store string
+	if filepath.IsAbs(f.Store) {
+		store = filepath.Clean(f.Store)
+	} else {
+		store = filepath.Join(filepath.Dir(p), f.Store) // relative to config file's dir (PRD §8.1)
+	}
+	info, err := os.Stat(store)
+	if err != nil || !info.IsDir() {
+		return "", 0, false // store path is not an existing dir -> fall through
+	}
+	return store, SourceConfig, true
+}
+
+// findSibling implements PRD §8.3 rule 3 — locate <repoDir>/extensions next to the
+// running binary, symlink-aware. This is the rule that makes the §12.1 symlink
+// install work: ~/.local/bin/weave -> ~/projects/weave/weave resolves back to the
+// repo's own extensions/, and `git pull && go build` updates the linked binary in
+// place.
+//
+// It is a thin entry that asks the OS for the running binary (os.Executable) and
+// delegates the symlink/dir logic to resolveSiblingFromExe. os.Executable cannot
+// be controlled in a test (it returns the test binary's own path in a temp
+// go-build dir), so the testable core lives in resolveSiblingFromExe.
+//
+// Returns (candidate, SourceSibling, true) on a hit; ("", 0, false) otherwise so
+// Find() (S3) can fall through to rule 4. Never errors (locked per-rule shape).
+func findSibling() (dir string, src Source, found bool) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", 0, false // no binary path at all -> skip rule
+	}
+	d, ok := resolveSiblingFromExe(exe)
+	if !ok {
+		return "", 0, false
+	}
+	return d, SourceSibling, true
+}
+
+// resolveSiblingFromExe is the symlink-aware sibling-resolution core for rule 3,
+// factored out so it can be unit-tested with arbitrary exe paths.
+//
+// PRD §8.3 sequence:
+//
+//	real, err := filepath.EvalSymlinks(exe)  // REQUIRED on macOS (redundant but
+//	                                         //   harmless on Linux via /proc/self/exe)
+//	if err != nil { real = exe }             // fall back to raw exe on EvalSymlinks error
+//	repoDir := filepath.Dir(real)
+//	candidate := filepath.Join(repoDir, "extensions")
+//	win iff os.Stat(candidate) reports an existing directory
+//
+// CRITICAL: EvalSymlinks MUST stay. On Linux os.Executable() resolves the symlink
+// via /proc/self/exe (so EvalSymlinks is redundant-but-harmless), but on macOS
+// os.Executable() may return the symlink path and rule 3 SILENTLY misses without
+// EvalSymlinks. See architecture/verified_symlink_resolution.md. Linux-only test
+// runs pass with OR without EvalSymlinks — do NOT use that as justification to
+// remove it.
+func resolveSiblingFromExe(exe string) (dir string, found bool) {
+	real, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		real = exe // EvalSymlinks could not resolve -> use exe verbatim (REQUIRED fallback)
+	}
+	repoDir := filepath.Dir(real)
+	candidate := filepath.Join(repoDir, "extensions") // weave: the skills dir is named extensions
+	info, err := os.Stat(candidate)
+	if err != nil || !info.IsDir() {
+		return "", false // no existing extensions/ sibling -> rule misses
+	}
+	return candidate, true
 }
 
 // errExtensionFound is a sentinel error used to short-circuit filepath.WalkDir

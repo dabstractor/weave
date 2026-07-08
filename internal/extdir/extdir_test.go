@@ -10,8 +10,12 @@ import (
 // prior state on cleanup. Needed because t.Setenv can only set, never unset.
 // Do NOT call t.Parallel() in any test that uses this or t.Setenv — mutates env.
 //
-// S1 has no findConfig yet, so (unlike skilldozer's helper) it does NOT touch
-// weave_CONFIG — that neutralization belongs to S2/S3 once findConfig lands.
+// ALSO neutralizes the config-file rule (PRD §8.3 rule 2): points weave_CONFIG
+// at a non-existent path so findConfig deterministically misses in all-miss /
+// env-only tests. Without this, a machine with a real config
+// (~/.config/weave/config.yaml, or weave_CONFIG set) would make the new
+// findConfig tests that expect a miss leak a real dir. Mirrors skilldozer's
+// unsetEnvVar (which does the same for SKILLDOZER_CONFIG).
 func unsetEnvVar(tb testing.TB) {
 	tb.Helper()
 	prev, had := os.LookupEnv(envVar)
@@ -25,6 +29,47 @@ func unsetEnvVar(tb testing.TB) {
 			_ = os.Unsetenv(envVar)
 		}
 	})
+	// NEW in S2: neutralize the config rule (PRD §8.3 rule 2). weave_CONFIG is
+	// LOWERCASE per config.go const configEnv; os.Setenv is case-sensitive on Linux.
+	cfgGhost := filepath.Join(tb.TempDir(), "no-config.yaml")
+	prevCfg, hadCfg := os.LookupEnv("weave_CONFIG")
+	if err := os.Setenv("weave_CONFIG", cfgGhost); err != nil {
+		tb.Fatalf("setenv weave_CONFIG: %v", err)
+	}
+	tb.Cleanup(func() {
+		if hadCfg {
+			_ = os.Setenv("weave_CONFIG", prevCfg)
+		} else {
+			_ = os.Unsetenv("weave_CONFIG")
+		}
+	})
+}
+
+// makeFakeBinary creates a regular file at dir/name to stand in for a compiled
+// binary. EvalSymlinks + os.Stat(Join(dir,"extensions")) do not require a real
+// ELF executable, so a 1-byte file is sufficient (skilldozer research §5:
+// verified_facts.md §5). Used by the resolveSiblingFromExe tests.
+func makeFakeBinary(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fake binary %s: %v", p, err)
+	}
+	return p
+}
+
+// writeCfg writes content to a temp config.yaml, sets weave_CONFIG to it, and
+// returns (cfgPath, cfgDir). Helper for the findConfig tests. Mirrors the
+// writeCfg idiom from skilldozer and internal/config/config_test.go.
+func writeCfg(t *testing.T, content string) (cfgPath, cfgDir string) {
+	t.Helper()
+	cfgDir = t.TempDir()
+	cfgPath = filepath.Join(cfgDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", cfgPath, err)
+	}
+	t.Setenv("weave_CONFIG", cfgPath)
+	return cfgPath, cfgDir
 }
 
 func TestSourceString(t *testing.T) {
@@ -374,5 +419,201 @@ func TestHasExtensionEntryShortCircuits(t *testing.T) {
 	}
 	if !HasExtensionEntry(root) {
 		t.Errorf("HasExtensionEntry(shallow entry + deep non-entry tree): got false; want true (short-circuits on the shallow entry)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveSiblingFromExe tests (rule 3 testable core). Ported from skilldozer
+// with renames: "skills" -> "extensions".
+// ---------------------------------------------------------------------------
+
+// Rule 3 CONTRACT: a symlink to the binary in a DIFFERENT dir must resolve back
+// to the REAL binary's repo dir's extensions/. Mirrors
+// architecture/verified_symlink_resolution.md and the PRD §12.1 symlink-install
+// rationale (~/.local/bin/weave -> ~/projects/weave/weave resolves back to the repo).
+func TestResolveSiblingFromExeSymlinkCrossDir(t *testing.T) {
+	// tempA holds the REAL binary + its sibling extensions/
+	tempA := t.TempDir()
+	binary := makeFakeBinary(t, tempA, "weave")
+	extA := filepath.Join(tempA, "extensions")
+	if err := os.Mkdir(extA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// tempB holds a symlink to the binary (different dir, like ~/.local/bin)
+	tempB := t.TempDir()
+	link := filepath.Join(tempB, "weave")
+	if err := os.Symlink(binary, link); err != nil {
+		t.Skipf("symlinks not supported on this platform: %v", err)
+	}
+
+	got, found := resolveSiblingFromExe(link)
+	if !found {
+		t.Fatalf("resolveSiblingFromExe(symlink): found=false; want true")
+	}
+	if got != extA {
+		t.Errorf("resolveSiblingFromExe(symlink): dir=%q; want the REAL binary's extensions %q", got, extA)
+	}
+	if filepath.Dir(got) != tempA {
+		t.Errorf("resolveSiblingFromExe(symlink): resolved to %q, not the real binary's dir %q", filepath.Dir(got), tempA)
+	}
+}
+
+// Rule 3: direct (non-symlinked) binary with a sibling extensions/ also wins.
+func TestResolveSiblingFromExeDirect(t *testing.T) {
+	tempA := t.TempDir()
+	binary := makeFakeBinary(t, tempA, "weave")
+	extA := filepath.Join(tempA, "extensions")
+	if err := os.Mkdir(extA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, found := resolveSiblingFromExe(binary)
+	if !found {
+		t.Fatalf("resolveSiblingFromExe(direct): found=false; want true")
+	}
+	if got != extA {
+		t.Errorf("resolveSiblingFromExe(direct): dir=%q; want %q", got, extA)
+	}
+}
+
+// Rule 3: EvalSymlinks-error fallback. A non-existent exe whose parent dir DOES
+// have a sibling extensions/ must still win via real=exe. (Contract: 'if err, use
+// exe as fallback.') Pinned by the item contract.
+func TestResolveSiblingFromExeEvalSymlinksFallback(t *testing.T) {
+	tempC := t.TempDir()
+	extC := filepath.Join(tempC, "extensions")
+	if err := os.Mkdir(extC, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 'ghost' binary does not exist -> EvalSymlinks errors -> fall back to exe.
+	ghost := filepath.Join(tempC, "does-not-exist-binary")
+	got, found := resolveSiblingFromExe(ghost)
+	if !found {
+		t.Fatalf("resolveSiblingFromExe(ghost): found=false; want true (EvalSymlinks fallback to exe)")
+	}
+	if got != extC {
+		t.Errorf("resolveSiblingFromExe(ghost): dir=%q; want %q (Dir(exe)/extensions)", got, extC)
+	}
+}
+
+// Rule 3: binary exists but NO sibling extensions/ dir -> miss.
+func TestResolveSiblingFromExeNoExtensionsDir(t *testing.T) {
+	tempA := t.TempDir()
+	binary := makeFakeBinary(t, tempA, "weave")
+	// deliberately create no extensions/ sibling
+	if _, found := resolveSiblingFromExe(binary); found {
+		t.Errorf("resolveSiblingFromExe(no extensions): got found=true; want false")
+	}
+}
+
+// Rule 3: sibling path 'extensions' is a regular FILE, not a dir -> miss (IsDir guard).
+func TestResolveSiblingFromExeExtensionsIsFile(t *testing.T) {
+	tempA := t.TempDir()
+	binary := makeFakeBinary(t, tempA, "weave")
+	if err := os.WriteFile(filepath.Join(tempA, "extensions"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := resolveSiblingFromExe(binary); found {
+		t.Errorf("resolveSiblingFromExe(extensions is file): got found=true; want false (IsDir guard)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findSibling tests (rule 3 entry; os.Executable exercised).
+// ---------------------------------------------------------------------------
+
+// Smoke test: the REAL test binary runs from a temp build dir (go-buildXXX)
+// that has NO sibling extensions/, so findSibling must return found=false without
+// panicking. This is the only deterministic assertion possible for findSibling
+// (os.Executable cannot be controlled); the symlink logic is covered by the
+// resolveSiblingFromExe tests above.
+func TestFindSiblingNoExtensionsNextToTestBinary(t *testing.T) {
+	dir, src, found := findSibling()
+	if found {
+		t.Errorf("findSibling(): got found=true dir=%q src=%v; want false (test binary's dir has no sibling extensions/)", dir, src)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findConfig tests (PRD §8.3 rule 2 / §8.1). Ported from skilldozer with renames:
+// "SKILLDOZER_CONFIG" -> "weave_CONFIG".
+// ---------------------------------------------------------------------------
+
+// Rule 2 hit: an existing store dir named by an absolute `store` -> found,
+// SourceConfig, cleaned absolute dir.
+// Do NOT call t.Parallel() — mutates env.
+func TestFindConfigHit(t *testing.T) {
+	store := t.TempDir() // already an existing, absolute dir
+	writeCfg(t, "store: "+store+"\n")
+	got, src, found := findConfig()
+	if !found {
+		t.Fatal("findConfig existing store: found=false; want true")
+	}
+	if src != SourceConfig {
+		t.Errorf("src=%v; want SourceConfig", src)
+	}
+	if want := filepath.Clean(store); got != want {
+		t.Errorf("dir=%q; want cleaned %q", got, want)
+	}
+}
+
+// Rule 2 miss: config file does not exist -> fall through (never a hard error).
+// Do NOT call t.Parallel() — mutates env.
+func TestFindConfigMissingFile(t *testing.T) {
+	t.Setenv("weave_CONFIG", filepath.Join(t.TempDir(), "does-not-exist.yaml"))
+	if dir, src, found := findConfig(); found {
+		t.Errorf("findConfig missing file: got found=true dir=%q src=%v; want false", dir, src)
+	}
+}
+
+// Rule 2 miss: config file has no `store` key -> fall through.
+// Do NOT call t.Parallel() — mutates env.
+func TestFindConfigMissingStoreKey(t *testing.T) {
+	writeCfg(t, "foo: bar\n") // no `store:` key
+	if dir, src, found := findConfig(); found {
+		t.Errorf("findConfig no store key: got found=true dir=%q src=%v; want false", dir, src)
+	}
+}
+
+// Rule 2 miss: `store` names a dir that does not exist -> fall through.
+// Do NOT call t.Parallel() — mutates env.
+func TestFindConfigStoreDirAbsent(t *testing.T) {
+	writeCfg(t, "store: "+filepath.Join(t.TempDir(), "no-such-store")+"\n")
+	if dir, src, found := findConfig(); found {
+		t.Errorf("findConfig absent store dir: got found=true dir=%q src=%v; want false", dir, src)
+	}
+}
+
+// Rule 2 (weave variant): weave's config.Load is a hand-rolled line scanner, NOT
+// yaml.v3, so there is NO "malformed syntax" hard-error case — a garbage-content
+// file with no "store:" line returns File{Store: ""}, nil, and findConfig falls
+// through via the f.Store == "" branch. This is equivalent to MissingStoreKey for
+// weave's parser shape. (skilldozer had a hard-error case via yaml.v3; weave does not.)
+// Do NOT call t.Parallel() — mutates env.
+func TestFindConfigMalformedSyntax(t *testing.T) {
+	writeCfg(t, "store: [unclosed\n") // no parseable `store:` value -> File{Store:""}
+	if dir, src, found := findConfig(); found {
+		t.Errorf("findConfig malformed syntax: got found=true dir=%q src=%v; want false (fall through, no hard error)", dir, src)
+	}
+}
+
+// Rule 2 (PRD §8.1): a relative `store` is resolved against the config FILE's dir,
+// not against cwd. `store: mystore` in a config at <cfgDir>/config.yaml resolves to
+// <cfgDir>/mystore.
+// Do NOT call t.Parallel() — mutates env.
+func TestFindConfigRelativeStoreResolvedAgainstConfigDir(t *testing.T) {
+	cfgPath, cfgDir := writeCfg(t, "store: mystore\n")
+	store := filepath.Join(cfgDir, "mystore")
+	if err := os.Mkdir(store, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", store, err)
+	}
+	got, src, found := findConfig()
+	if !found {
+		t.Fatal("findConfig relative store: found=false; want true")
+	}
+	if src != SourceConfig {
+		t.Errorf("src=%v; want SourceConfig", src)
+	}
+	if got != store {
+		t.Errorf("dir=%q; want %q (joined to filepath.Dir(%q))", got, store, cfgPath)
 	}
 }
