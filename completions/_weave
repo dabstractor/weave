@@ -1,0 +1,61 @@
+#compdef weave
+# Zsh completion for weave (autoload function).
+#
+# Install (one of):
+#   cp completions/_weave ~/.zsh/completions/_weave
+#   cp completions/_weave /usr/local/share/zsh/site-functions/_weave
+# then ensure `autoload -U compinit && compinit` in your .zshrc.
+#
+# Tags are derived DYNAMICALLY from disk by calling `weave --relative --all`
+# (weave is manifest-free, PRD §2: there is no sidecar catalog to read).
+#
+# LOCKSTEP: the flag list below is frozen to `main.go parseArgs()`. If a future
+# task adds/renames a flag there, update this list — and the bash/fish files —
+# identically.
+_weave() {
+    local -a tags
+    # Canonical relTags, one per line. ${(f)...} splits on newlines. Errors
+    # swallowed: a missing/broken weave yields an empty list, not a stderr dump.
+    tags=(${(f)"$(weave --relative --all 2>/dev/null)"})
+
+    local -a flags=(
+        '--version[Print the weave version]'   '-v[Print the weave version]'
+        '--help[Show this help message]'      '-h[Show this help message]'
+        '--path[Print the resolved extensions directory]' '-p[Print the resolved extensions directory]'
+        '--list[Human-readable catalog (TAG, NAME, DESCRIPTION)]' '-l[Human-readable catalog]'
+        '--all[Print every extension path, sorted by tag]' '-a[Print every extension path]'
+        '--file[Print the entry file path instead of the directory]' '-f[Print the entry file path]'
+        '--relative[Print paths relative to the extensions directory]'
+        '--no-color[Disable ANSI color]'
+        # `:query:` marks --search/-s as value-taking, so zsh routes the value
+        # slot away from $state (no tag completion after them). NO completion is
+        # offered for the search value (free-text query).
+        '--search[Substring search over tag/name/description/keywords]:query:'
+        '-s[Substring search over tag/name/description/keywords]:query:'
+        # `:directory:_files` routes --store's value slot to file/path completion
+        # (directories). No short form. (The OPPOSITE of --search: --store WANTS
+        # path completion; --search offers nothing.)
+        '--store[Non-interactive store path for init]:directory:_files'
+    )
+
+    _arguments -C "$flags[@]" '1: :->first' '*: :->rest' && return 0
+
+    case "$state" in
+        first)
+            # check AND init are offered ONLY as the first positional token.
+            compadd -- "$tags[@]" check init
+            ;;
+        rest)
+            # `check` AND `init` are exclusive (PRD §6.3: either+tags → exit 2).
+            # Once one is seen, suppress tags so completion never invites a
+            # guaranteed error.
+            if (( ${words[(I)check]} || ${words[(I)init]} )); then
+                _message 'subcommand takes no tag arguments'
+            else
+                compadd -- "$tags[@]"
+            fi
+            ;;
+    esac
+}
+
+_weave "$@"

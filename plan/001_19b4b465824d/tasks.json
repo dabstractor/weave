@@ -595,14 +595,14 @@
               "type": "Task",
               "id": "P1.M6.T3",
               "title": "Shell completions (PRD §14)",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Ship completions for bash, zsh, fish. They complete subcommands/flags and tags (dynamically via `weave --all`).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T3.S1",
                   "title": "weave.bash + _weave (zsh) + weave.fish",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M5.T1.S1"
@@ -619,14 +619,14 @@
               "type": "Task",
               "id": "P1.M6.T4",
               "title": "README.md (PRD §15)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Write the user-facing README following the §15 outline, mirroring skilldozer's README tone and structure.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T4.S1",
                   "title": "README.md (full §15 outline)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M6.T2.S1",
