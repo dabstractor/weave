@@ -208,6 +208,11 @@ is one of three kinds:
 - a **package**: a directory with a `package.json` whose `pi.extensions` array
   names at least one existing entry
 
+During discovery, `weave` skips `node_modules/` and `.git/` directories, and
+any file or directory whose name starts with `.` (hidden entries). So an
+`npm install` at the store root will not pollute the catalog, and a stray
+`.secret.ts` is ignored.
+
 The canonical **tag** is the entry's path **relative to `extensions/`**, with
 `/` separators, and a trailing `.ts`/`.js` stripped for single files. It is
 **not** the `package.json` `name`.
@@ -301,8 +306,8 @@ OK    example (example)
 `weave` locates `extensions/` by this priority (first hit wins):
 
 1. **`weave_EXTENSIONS_DIR` env var**: override; if set and an existing dir,
-   use it. Lets CI, tests, and temporary redirects win without editing the
-   config.
+   use it (symlinked paths are resolved). Lets CI, tests, and temporary
+   redirects win without editing the config.
 2. **Config file `store`**: the primary, set by `weave init`. The config
    lives at `$XDG_CONFIG_HOME/weave/config.yaml` (becomes
    `~/.config/weave/config.yaml`); override the file path with

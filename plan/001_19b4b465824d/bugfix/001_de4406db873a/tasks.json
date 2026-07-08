@@ -178,21 +178,21 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Sync Changeset-Level Documentation",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Final documentation sweep to ensure README.md and any overview docs accurately reflect the post-fix discovery behavior. Per SOW §5 Mode B: cross-cutting docs that only make sense once the whole changeset is in place ride as a final task with dependencies on all implementing subtasks.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "Sync changeset-level documentation",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Review README.md for accuracy against the post-fix behavior. The primary update is documenting that node_modules/, .git/, and hidden entries are skipped during discovery (Issue 6). Verify the package-kind description is consistent with the fixed classifyDir. No new doc files — update existing README.md content only.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T1.S1",
                   "title": "Update README.md to reflect post-fix discovery behavior",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
