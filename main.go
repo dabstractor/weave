@@ -18,7 +18,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/dabstractor/weave/internal/discover"
 	"github.com/dabstractor/weave/internal/extdir"
+	"github.com/dabstractor/weave/internal/ui"
 )
 
 // version is the weave version string, printed by `weave --version`. It is
@@ -384,9 +386,41 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// 3) All other parsed modes are no-ops for now. M2 adds --list, M3 adds
-	//    <tag>/--file/--all, M4 adds --search/check/init, M5 adds
-	//    --help/exclusivity/unknown-flag-2 and the no-args→usage path. The parser
-	//    is ALREADY complete; later milestones add dispatch branches HERE only.
+	// 3) --list / -l (PRD §6.1). The FIRST end-to-end wiring of the
+	//    Find() -> discover.Index() -> ui.PrintList() data flow. Exit 1 on any
+	//    failure path. This branch does NOT consult c.file / c.relative (--list
+	//    prints a TABLE, not paths — PRD §6.2 header: modifiers combine with tag
+	//    resolution or --all). Exclusivity (--list + --file, etc.) is M5.T1.S1.
+	if c.list {
+		// PRD §6.1 `weave --list`: resolve the store, build the index, render the
+		// table. Find locates the dir via the §8.3 rules; Index walks it and
+		// returns []Extension sorted by RelTag; PrintList renders TAG/NAME/DESCRIPTION.
+		dir, _, err := extdir.Find() // src (2nd return) DISCARDED: --list does NOT print "(found via ...)" (that's --path-only)
+		if err != nil {
+			fmt.Fprintln(stderr, err) // ErrNotFound.Error() verbatim + newline (PRD §6.4/§8.2)
+			return 1
+		}
+		exts, err := discover.Index(dir)
+		if err != nil {
+			fmt.Fprintln(stderr, err) // e.g. dir vanished between Find and Index
+			return 1
+		}
+		if len(exts) == 0 {
+			// PRD §6.1: --list exits 1 "if no extensions found". Message to stderr so
+			// stdout stays clean for any consumer. The +dir suffix is a debugging aid
+			// (which dir was found-but-empty).
+			fmt.Fprintln(stderr, "no extensions found in "+dir)
+			return 1
+		}
+		// Color only when stdout is a TTY AND --no-color was not given (PRD §6.2).
+		// A *bytes.Buffer (tests) / pipe / file is not a TTY -> plain output.
+		ui.PrintList(stdout, exts, isTerminal(stdout) && !c.noColor)
+		return 0
+	}
+
+	// 4) All other parsed modes are no-ops for now. M3 adds <tag>/--file/--all,
+	//    M4 adds --search/check/init, M5 adds --help/exclusivity/unknown-flag-2
+	//    and the no-args→usage path. The parser is ALREADY complete; later
+	//    milestones add dispatch branches HERE only.
 	return 0
 }

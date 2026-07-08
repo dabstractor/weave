@@ -282,14 +282,14 @@
               "type": "Task",
               "id": "P1.M2.T5",
               "title": "main.go wiring --list",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add the --list dispatch branch to run(), wiring extdir.Find() → discover.Index() → ui.PrintList().",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T5.S1",
                   "title": "--list mode dispatch in run()",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T3.S1",
@@ -318,14 +318,14 @@
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "internal/resolve — tag → extension resolution (PRD §7.2)",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Port skilldozer's internal/resolve nearly verbatim. The 4-step precedence is identical; only the type changes (Skill → Extension).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Resolve() with 4-step precedence + UnknownError + AmbiguousError",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S1"

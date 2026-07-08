@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +25,36 @@ func unsetExtEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("weave_EXTENSIONS_DIR", filepath.Join(t.TempDir(), "no-ext")) // rule 1 misses (dir doesn't exist)
 	t.Setenv("weave_CONFIG", filepath.Join(t.TempDir(), "no-config.yaml")) // rule 2 misses (file doesn't exist) — LOWERCASE
+}
+
+// withTerminal overrides the package-level isTerminal func for one test and
+// restores it on cleanup. Use it to exercise the color-enabled path through
+// run() without a real terminal. NOT t.Parallel-safe (mutates package state).
+func withTerminal(t *testing.T, isTTY bool) {
+	t.Helper()
+	prev := isTerminal
+	isTerminal = func(io.Writer) bool { return isTTY }
+	t.Cleanup(func() { isTerminal = prev })
+}
+
+// writeExtTree writes a temporary extensions store: one single-file <tag>.ts
+// extension per layout entry, each with a leading `/** ... */` JSDoc block so
+// discover.ExtractJSDoc picks up the description. weave extensions are .ts FILES
+// directly under the store root (PRD §7.1), NOT <tag>/SKILL.md directories as in
+// skilldozer — a directory with no index.ts/package.json is NOT recognized by
+// classifyDir, so it must be a .ts FILE. The JSDoc opener is exactly `/**` (two
+// stars); a `//` or `/*` (one star) comment yields Description="".
+func writeExtTree(t *testing.T, layout map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for tag, desc := range layout {
+		content := "/** " + desc + " */\nexport default function() {}\n"
+		path := filepath.Join(root, filepath.FromSlash(tag)+".ts")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	return root
 }
 
 // --- parseArgs matrix ---
@@ -508,21 +540,23 @@ func TestRunVersionPrecedenceOverPath(t *testing.T) {
 
 // --- run: no-op modes (this milestone) ---
 
-// A parsed mode that is NOT yet dispatched (e.g. --list, <tag>) is a no-op in
-// this milestone: exit 0, no output. M2/M3/M4/M5 add the dispatch branches.
-// This pins the "parser complete, dispatch trimmed" contract so a later
-// milestone that accidentally changes the no-op shape is caught.
-func TestRunUndispatchedModeIsNoOp(t *testing.T) {
+// A parsed mode that is NOT yet dispatched (e.g. --all, <tag>) is a no-op in
+// this milestone: exit 0, no output. M3/M4/M5 add the dispatch branches. This
+// pins the "parser complete, dispatch trimmed" contract so a later milestone
+// that accidentally changes the no-op shape is caught. (Note: --list WAS a
+// no-op here until M2.T5.S1, which added its dispatch branch — so --list is no
+// longer tested here; --all, still undispatched until M3.T2.S1, takes its place.)
+func TestRunUndispatchedAllIsNoOp(t *testing.T) {
 	var out, errOut bytes.Buffer
-	code := run([]string{"--list"}, &out, &errOut)
+	code := run([]string{"--all"}, &out, &errOut)
 	if code != 0 {
-		t.Errorf("run(--list): code=%d; want 0 (no-op until M2.T5.S1)", code)
+		t.Errorf("run(--all): code=%d; want 0 (no-op until M3.T2.S1)", code)
 	}
 	if out.Len() != 0 {
-		t.Errorf("run(--list) stdout=%q; want empty (no-op)", out.String())
+		t.Errorf("run(--all) stdout=%q; want empty (no-op)", out.String())
 	}
 	if errOut.Len() != 0 {
-		t.Errorf("run(--list) stderr=%q; want empty (no-op)", errOut.String())
+		t.Errorf("run(--all) stderr=%q; want empty (no-op)", errOut.String())
 	}
 }
 
@@ -536,5 +570,125 @@ func TestRunNoArgsIsNoOp(t *testing.T) {
 	}
 	if out.Len() != 0 || errOut.Len() != 0 {
 		t.Errorf("run(nil) produced output; want none (no-op): stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+// --- run: --list / -l (M2.T5.S1) ---
+
+// --list success: a populated store renders a TAG/NAME/DESCRIPTION table on
+// stdout, empty stderr (NO "(found via ...)" source label — that is --path-only),
+// exit 0. A non-TTY *bytes.Buffer yields plain output (no ANSI) by default.
+func TestRunListSuccess(t *testing.T) {
+	dir := writeExtTree(t, map[string]string{
+		"example": "A demo extension.",
+	})
+	t.Setenv("weave_EXTENSIONS_DIR", dir) // rule 1 wins; Find returns dir, Index finds the extension
+	var out, errOut bytes.Buffer
+	code := run([]string{"--list"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--list): code=%d; want 0", code)
+	}
+	got := out.String()
+	for _, want := range []string{"TAG", "NAME", "DESCRIPTION", "example", "A demo extension."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("run(--list) stdout missing %q:\n%s", want, got)
+		}
+	}
+	// Default (non-TTY buffer) -> no ANSI escapes.
+	if strings.Contains(got, "\x1b[") {
+		t.Errorf("run(--list) on a non-TTY must not emit ANSI:\n%s", got)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("run(--list) stderr=%q; want empty (no source label for --list)", errOut.String())
+	}
+}
+
+// -l short flag behaves identically to --list.
+func TestRunListShortFlag(t *testing.T) {
+	dir := writeExtTree(t, map[string]string{
+		"example": "d",
+	})
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-l"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(-l): code=%d; want 0", code)
+	}
+	if !strings.Contains(out.String(), "example") {
+		t.Errorf("run(-l) stdout missing the example tag:\n%s", out.String())
+	}
+}
+
+// --list with NO extensions (empty store) -> PRD §6.1 exit 1, stdout empty, a
+// message to stderr. weave_EXTENSIONS_DIR pointing at an existing-but-empty dir:
+// rule 1 wins (it needs only an existing dir), Index returns [], len==0 -> exit 1.
+func TestRunListNoExtensionsExit1(t *testing.T) {
+	t.Setenv("weave_EXTENSIONS_DIR", t.TempDir()) // exists, no .ts -> empty catalog
+	var out, errOut bytes.Buffer
+	code := run([]string{"--list"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(--list) empty store: code=%d; want 1 (PRD §6.1 '1 if no extensions found')", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("run(--list) empty store stdout=%q; want empty (only the exit-1 + stderr msg)", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no extensions found") {
+		t.Errorf("run(--list) empty store stderr=%q; want a 'no extensions found' message", errOut.String())
+	}
+}
+
+// --list when the extensions dir is unresolvable -> Find() returns ErrNotFound
+// -> exit 1, stdout empty, the one-line fix to stderr (same contract as --path).
+func TestRunListUnresolvableExit1(t *testing.T) {
+	unsetExtEnv(t)
+	t.Chdir(t.TempDir()) // force all §8.3 rules to miss
+	var out, errOut bytes.Buffer
+	code := run([]string{"--list"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("run(--list) unresolvable: code=%d; want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("run(--list) unresolvable stdout=%q; want empty", out.String())
+	}
+	if !strings.Contains(errOut.String(), "weave init") {
+		t.Errorf("run(--list) unresolvable stderr=%q; want the one-line fix", errOut.String())
+	}
+}
+
+// --list with --no-color suppresses ANSI even when stdout looks like a TTY.
+// Forces isTerminal=true (so color WOULD be on by default) and asserts --no-color
+// still yields plain output.
+func TestRunListNoColorFlagSuppressesANSI(t *testing.T) {
+	dir := writeExtTree(t, map[string]string{
+		"example": "d",
+	})
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	withTerminal(t, true) // pretend stdout is a TTY
+	var out, errOut bytes.Buffer
+	code := run([]string{"--list", "--no-color"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--list --no-color): code=%d; want 0", code)
+	}
+	if strings.Contains(out.String(), "\x1b[") {
+		t.Errorf("--no-color must suppress ANSI even on a TTY:\n%s", out.String())
+	}
+}
+
+// --list color path: when stdout is a TTY (forced) and --no-color is absent, the
+// table carries ANSI escapes. Proves the TTY gate is wired into run().
+func TestRunListColorWhenTTY(t *testing.T) {
+	dir := writeExtTree(t, map[string]string{
+		"example": "d",
+	})
+	t.Setenv("weave_EXTENSIONS_DIR", dir)
+	withTerminal(t, true)
+	var out, errOut bytes.Buffer
+	code := run([]string{"--list"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("run(--list) tty: code=%d; want 0", code)
+	}
+	got := out.String()
+	if !strings.Contains(got, "\x1b[1m") || !strings.Contains(got, "\x1b[36m") || !strings.Contains(got, "\x1b[0m") {
+		t.Errorf("TTY output should contain ANSI bold/cyan/reset:\n%s", got)
 	}
 }
