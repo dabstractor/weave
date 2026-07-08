@@ -233,14 +233,14 @@
               "type": "Task",
               "id": "P1.M2.T3",
               "title": "internal/discover — Index() walk + sort",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Tie the classification logic into the public Index() entrypoint that walks the extensions dir, classifies entries, applies the descend rule, parses metadata, and returns a sorted []Extension.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T3.S1",
                   "title": "Index() function with WalkDir + SkipDir + stat-guard + sort",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T2.S1"
@@ -258,14 +258,14 @@
               "type": "Task",
               "id": "P1.M2.T4",
               "title": "internal/ui — table formatting (TAG/NAME/DESCRIPTION)",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Port skilldozer's internal/ui nearly verbatim. Renders the human-readable catalog table for --list and --search.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T4.S1",
                   "title": "PrintList + padRight + wrapWords + displayWidth",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
