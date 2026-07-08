@@ -17,6 +17,52 @@ import (
 	"path/filepath"
 )
 
+// lenientAnySlice is the field type for the []-valued package.json fields
+// (keywords, weave.aliases, pi.extensions). It implements json.Unmarshaler so
+// that a WRONG-TYPED JSON value (a scalar like "notarray" or 123 where an array
+// is expected) is COERCED to nil instead of hard-erroring the entire unmarshal.
+//
+// This is the load-bearing leniency hook for PRD §7.3 ("a non-array keywords ⇒
+// []"). stdlib encoding/json hard-errors the WHOLE struct when a JSON scalar
+// meets a typed slice field ([]any included): it returns
+// "json: cannot unmarshal string into Go struct field ... of type []interface{}"
+// and discards every populated field (including valid ones like pi.extensions).
+// By intercepting the decode here and returning nil error for a non-array, the
+// parse succeeds and the other fields are preserved.
+//
+// On success the underlying value is whatever encoding/json produced for the
+// array: a []any holding the decoded elements (strings, numbers, bools, ...).
+// toStringSlice then normalizes []any → []string, dropping non-string elements
+// (so a stray number inside a valid array like ["a", 2, "b"] is dropped too).
+// A non-array value yields nil here → toStringSlice → nil (len 0).
+type lenientAnySlice []any
+
+// UnmarshalJSON implements json.Unmarshaler. A JSON array decodes normally; a
+// JSON null or any NON-array value (string/number/bool/object) coerces to nil
+// with NO error (PRD §7.3 leniency). We hand-parse via json.Unmarshal into an
+// []any first rather than letting the default decoder drive, so we can swallow
+// the type mismatch ourselves.
+func (s *lenientAnySlice) UnmarshalJSON(data []byte) error {
+	// json.Unmarshal into []any distinguishes "JSON array" from everything else:
+	// a scalar/bool/object leaves v as the decoded scalar (not []any) and returns
+	// no error; a JSON null leaves v as nil. Only a real array yields []any.
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		// Truly malformed JSON at this value (unterminated, etc.) cannot be
+		// coerced — propagate so ParsePackageJSON surfaces it as a parse error
+		// (the §9 "unparseable" path). This is distinct from a well-formed but
+		// wrong-typed value, which is the lenient case handled below.
+		return err
+	}
+	switch arr := v.(type) {
+	case []any:
+		*s = arr // a real array — keep the decoded elements
+	default:
+		*s = nil // null / scalar / object where an array was expected → coerce (PRD §7.3)
+	}
+	return nil
+}
+
 // toStringSlice normalizes a metadata value (from an encoding/json []any-typed
 // struct field) into []string.
 //
@@ -29,7 +75,9 @@ import (
 //     (lenient: a stray number in `keywords` is dropped, matching
 //     the "wrong-typed fields coerced or ignored" leniency of PRD §7.3)
 //   - []string      -> returned as-is (defensive; encoding/json never produces this)
-//   - single string -> []string{s} (lenient: a string where an array was expected)
+//   - single string -> nil (a scalar where an array was expected is dropped —
+//     lenientAnySlice already coerced it to nil at decode time; this branch is
+//     defensive for callers that build a PackageJSON struct literally)
 //   - anything else -> nil
 //
 // A present-but-empty array ([]any{}) yields an empty non-nil []string; an
@@ -41,6 +89,14 @@ func toStringSlice(v any) []string {
 	switch s := v.(type) {
 	case nil:
 		return nil
+	case lenientAnySlice:
+		out := make([]string, 0, len(s))
+		for _, e := range s {
+			if str, ok := e.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
 	case []any:
 		out := make([]string, 0, len(s))
 		for _, e := range s {
@@ -52,7 +108,7 @@ func toStringSlice(v any) []string {
 	case []string:
 		return s
 	case string:
-		return []string{s}
+		return nil // scalar-where-array-expected is dropped (PRD §7.3 coerces to [])
 	default:
 		return nil
 	}
@@ -114,19 +170,23 @@ type Extension struct {
 // package.json (PRD §10). It carries json tags (unlike Extension, which is
 // BUILT, never unmarshaled).
 //
-// LOAD-BEARING TYPING DECISION (see research/json_leniency.md): the array
-// fields (Keywords, Weave.Aliases, Pi.Extensions) are typed []any and the scalar
-// fields (Name, Description, Weave.Category) are typed any — NOT []string /
-// string. stdlib encoding/json HARD-ERRORS the ENTIRE unmarshal when a typed
-// []string/string field meets a wrong-typed JSON value (verified: a string
-// "notarray" into a []string Keywords aborts the parse and leaves every field
-// zero). That violates PRD §7.3's leniency mandate ("a non-array keywords ⇒
-// []"). Typing as []any/any makes json.Unmarshal LENIENT: a wrong-typed value
-// is absorbed (mixed ["a",2,"b"] parses with err==nil), and BuildExtension
-// normalizes via toStringSlice (drops non-strings) + comma-ok .(string) asserts
-// (drops non-strings to ""). This is the ONE place this package deliberately
-// diverges from extdir.hasPiExtensions, which can use []string because a wrong
-// type there just means "return false" (acceptable for that predicate).
+// LOAD-BEARING LENIENCY DECISION (PRD §7.3): the array fields (Keywords,
+// Weave.Aliases, Pi.Extensions) are typed lenientAnySlice — a custom
+// json.Unmarshaler that COERCES a wrong-typed value (a scalar where an array is
+// expected) to nil with NO error, instead of hard-erroring the whole unmarshal.
+// stdlib encoding/json HARD-ERRORS the ENTIRE parse when a typed []any field
+// meets a scalar JSON value (verified: "keywords":"notarray" aborts the parse
+// and leaves EVERY field zero, including valid ones like pi.extensions). That
+// violates PRD §7.3's "a non-array keywords ⇒ []" mandate. lenientAnySlice
+// absorbs the wrong type; BuildExtension then normalizes via toStringSlice
+// (drops non-string elements) + comma-ok .(string) asserts (drops non-strings
+// to ""). This is the ONE place this package deliberately diverges from
+// extdir.hasPiExtensions, which can use []string because a wrong type there
+// just means "return false" (acceptable for that predicate).
+//
+// The scalar fields (Name, Description, Weave.Category) are typed any: a
+// wrong-typed value there is absorbed by encoding/json itself and coerced to ""
+// by the comma-ok asserts in BuildExtension — no custom unmarshaler needed.
 //
 // Unknown keys are ignored by encoding/json's default (no
 // DisallowUnknownFields) — also a PRD §7.3 requirement. Dependencies is typed
@@ -135,25 +195,27 @@ type Extension struct {
 type PackageJSON struct {
 	Name         any               `json:"name"`
 	Description  any               `json:"description"`
-	Keywords     []any             `json:"keywords"`
+	Keywords     lenientAnySlice   `json:"keywords"`
 	Pi           piBlock           `json:"pi"`
 	Weave        weaveBlock        `json:"weave"`
 	Dependencies map[string]string `json:"dependencies"`
 }
 
 // piBlock is the namespaced `pi` object in package.json (what pi loads).
-// Extensions is []any for leniency (though BuildExtension does not consume it —
-// T2's classifier uses it via isResolvableDir/hasPiExtensions).
+// Extensions is lenientAnySlice (coerces a non-array to nil) so a wrong-typed
+// pi.extensions does not break discovery of a package extension (PRD §7.3).
+// BuildExtension does not consume it — classifyDir reads it via toStringSlice.
 type piBlock struct {
-	Extensions []any `json:"extensions"`
+	Extensions lenientAnySlice `json:"extensions"`
 }
 
 // weaveBlock is the namespaced `weave` catalog object in package.json (read by
-// weave only, never by pi). Aliases is []any (toStringSlice drops non-strings);
-// Category is any (comma-ok .(string) drops non-strings to "").
+// weave only, never by pi). Aliases is lenientAnySlice (coerces a non-array to
+// nil; toStringSlice then drops non-strings); Category is any (comma-ok .(string)
+// drops non-strings to "").
 type weaveBlock struct {
-	Aliases  []any `json:"aliases"`
-	Category any   `json:"category"`
+	Aliases  lenientAnySlice `json:"aliases"`
+	Category any             `json:"category"`
 }
 
 // ParsePackageJSON reads and parses the package.json in dir. It returns a

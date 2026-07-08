@@ -53,11 +53,11 @@ func TestResolveExamples(t *testing.T) {
 		wantRel   string
 		wantMatch MatchKind
 	}{
-		{"gate", "gate", Canonical},                                 // exact RelTag
+		{"gate", "gate", Canonical},                                   // exact RelTag
 		{"writing/reddit-poster", "writing/reddit-poster", Canonical}, // exact RelTag (nested)
 		{"reddit-poster", "writing/reddit-poster", Basename},          // basename, unambiguous (beats Name)
-		{"@my-org/summarizer", "summarizer", Name},                   // package.json name fallback
-		{"social", "writing/reddit-poster", Alias},                   // declared alias
+		{"@my-org/summarizer", "summarizer", Name},                    // package.json name fallback
+		{"social", "writing/reddit-poster", Alias},                    // declared alias
 	}
 	for _, c := range cases {
 		got, err := Resolve(c.tag, exampleExts)

@@ -6,8 +6,12 @@
 #   cp completions/weave.bash ~/.local/share/bash-completion/completions/weave
 #   cp completions/weave.bash /etc/bash_completion.d/weave
 #
-# Tags are derived DYNAMICALLY from disk by calling `weave --relative --all`
-# (weave is manifest-free, PRD §2: there is no sidecar catalog to read).
+# Tags are derived DYNAMICALLY from disk by calling `weave --list` and taking
+# the TAG column (weave is manifest-free, PRD §2: there is no sidecar catalog
+# to read). --list is used (NOT --relative --all) because the TAG column holds
+# the canonical RESOLVABLE tag — for a single-file extension the tag is
+# `example` (the .ts/.js suffix stripped), whereas --relative --all prints the
+# relative PATH `example.ts`, which does NOT resolve as a tag.
 #
 # LOCKSTEP: the flag set below is frozen to `main.go parseArgs()`. If a future
 # task adds/renames a flag there, update this list — and the zsh/fish files —
@@ -57,9 +61,12 @@ _weave_completion() {
 
     # Tags straight from the binary (canonical relTags, one per line). Errors
     # swallowed: a missing/broken weave degrades to "no tags" instead of spewing
-    # into the completion menu.
+    # into the completion menu. `weave --list`'s first column is the canonical
+    # tag; only DATA rows are taken (a leading non-space first column) so wrapped
+    # DESCRIPTION continuation lines — which indent and would otherwise leak
+    # description words into $1 — are skipped.
     local tags cands
-    tags=$(weave --relative --all 2>/dev/null)
+    tags=$(weave --list 2>/dev/null | awk 'NR>1 && $0 !~ /^[[:space:]]/ && NF>0 {print $1}')
     cands="$tags"
     (( have_pos == 0 )) && cands="$cands check init"
     # SC2207 (mapfile preferred) is acceptable here: tags and flags never

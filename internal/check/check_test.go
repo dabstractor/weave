@@ -179,18 +179,21 @@ func TestCheckMissingEntryFile(t *testing.T) {
 }
 
 // TestCheckUnparseablePackageJSON: a package.json with broken JSON → 1 ERROR
-// 'package.json is not valid JSON'. The fixture is a DIR extension (has
-// index.ts so discover still classifies it) whose dir ALSO contains a broken
-// package.json — discover's re-parse recovers the unparseable error.
+// 'package.json is not valid JSON'. The fixture is a PACKAGE extension: its dir
+// contains a broken package.json, so classifyDir's case (b) binds the entry to
+// the package root (kind="package"); check then re-parses that root and
+// recovers the unparseable error. The index.ts at the top level is the
+// best-effort entry file (brokenPackageEntryFile falls back to it).
 func TestCheckUnparseablePackageJSON(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, filepath.FromSlash("broken"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	// index.ts at the top level → dir-kind extension (classifyDir case b fires
-	// because the broken package.json yields hasPkg=true,err!=nil and falls
-	// through; case a needs a valid pi.extensions, which the unmarshal never set).
+	// index.ts at the top level → best-effort entry file for the broken-JSON
+	// package (case b of classifyDir uses index.ts/index.js at the root when the
+	// package.json is unparseable). The dir is classified as kind="package"
+	// because a broken package.json signals package intent.
 	if err := os.WriteFile(filepath.Join(dir, "index.ts"), []byte("/** d */\nexport function b() {}\n"), 0o644); err != nil {
 		t.Fatalf("write index.ts: %v", err)
 	}
@@ -198,8 +201,8 @@ func TestCheckUnparseablePackageJSON(t *testing.T) {
 		t.Fatalf("write package.json: %v", err)
 	}
 	ext := findExt(t, root, "broken")
-	if ext.Kind != "dir" {
-		t.Fatalf("expected dir kind (broken pkg falls through to index.ts); got %q", ext.Kind)
+	if ext.Kind != "package" {
+		t.Fatalf("expected package kind (broken pkg binds to package root); got %q", ext.Kind)
 	}
 
 	rep := Check(root, []discover.Extension{ext})
@@ -209,6 +212,50 @@ func TestCheckUnparseablePackageJSON(t *testing.T) {
 	}
 	f, ok := finding(rep, "package.json is not valid JSON")
 	if !ok || f.Level != LevelError {
+		t.Errorf("missing 'package.json is not valid JSON' ERROR; got %+v", rep.ByExt[0].Findings)
+	}
+}
+
+// TestCheckUnparseablePackageJSONNestedEntry: the BUG 3 regression — a package
+// extension whose entry lives in a subdir (src/index.ts) with NO root index.ts,
+// and a broken package.json at the package root. discover must bind the entry
+// to the package root (tag = the dir basename, NOT "<dir>/src"), and check must
+// surface the §9 ERROR (exit 1). Previously the dir was misclassified as a
+// plain category folder, src/ discovered as a stray dir extension, and the
+// broken package.json at the root was never inspected.
+func TestCheckUnparseablePackageJSONNestedEntry(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, filepath.FromSlash("p2"))
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "index.ts"), []byte("export function s() {}\n"), 0o644); err != nil {
+		t.Fatalf("write src/index.ts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{ this is not valid json\n`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	exts, err := discover.Index(root)
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if len(exts) != 1 {
+		t.Fatalf("expected 1 extension bound to the package root; got %d: %+v", len(exts), exts)
+	}
+	if exts[0].RelTag != "p2" {
+		t.Errorf("RelTag=%q; want p2 (bound to package root, not %q/src)", exts[0].RelTag, exts[0].RelTag)
+	}
+	if exts[0].Kind != "package" {
+		t.Errorf("Kind=%q; want package", exts[0].Kind)
+	}
+
+	rep := Check(root, exts)
+	if !rep.HasErrors() {
+		t.Errorf("broken package.json with nested entry → no ERROR; want §9 'not valid JSON' ERROR. Findings: %+v", rep.ByExt)
+	}
+	if f, ok := finding(rep, "package.json is not valid JSON"); !ok || f.Level != LevelError {
 		t.Errorf("missing 'package.json is not valid JSON' ERROR; got %+v", rep.ByExt[0].Findings)
 	}
 }

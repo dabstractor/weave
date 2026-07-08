@@ -3,8 +3,12 @@
 # Install:
 #   cp completions/weave.fish ~/.config/fish/completions/weave.fish
 #
-# Tags are derived DYNAMICALLY from disk by calling `weave --relative --all`
-# (weave is manifest-free, PRD §2: there is no sidecar catalog to read).
+# Tags are derived DYNAMICALLY from disk by calling `weave --list` and taking
+# the TAG column (weave is manifest-free, PRD §2: there is no sidecar catalog
+# to read). --list is used (NOT --relative --all) because the TAG column holds
+# the canonical RESOLVABLE tag — for a single-file extension the tag is
+# `example` (the .ts/.js suffix stripped), whereas --relative --all prints the
+# relative PATH `example.ts`, which does NOT resolve as a tag.
 #
 # LOCKSTEP: the flag list below is frozen to `main.go parseArgs()`. If a future
 # task adds/renames a flag there, update this file — and the bash/zsh files —
@@ -47,5 +51,9 @@ complete -c weave -n '__fish_is_first_arg' -a 'init' -d 'First-run setup: pick/c
 # tag — the store is manifest-free and changes as extensions are added). Suppressed
 # once `check` OR `init` is seen (exclusive subcommand, PRD §6.3) AND when the
 # previous arg is --search/-s (free-text query — no tag completion there either).
+# The TAG column of `weave --list` holds the canonical resolvable tag (NOT
+# --relative --all, whose relative PATH for a single-file ext keeps the .ts/.js
+# suffix and does not resolve). Only DATA rows are taken (leading non-space
+# first column) so wrapped DESCRIPTION continuation lines are skipped.
 complete -c weave -n 'not __fish_seen_subcommand_from check init; and not __fish_prev_arg_in --search -s' \
-    -a '(weave --relative --all 2>/dev/null)' -d 'extension tag'
+    -a '(weave --list 2>/dev/null | awk \'NR>1 && $0 !~ /^[[:space:]]/ && NF>0 {print $1}\')' -d 'extension tag'

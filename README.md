@@ -92,8 +92,11 @@ A quoted `~/...` or a `~` typed at the prompt is taken literally, because
 ## Shell completions
 
 `weave` ships dynamic completions for bash, zsh, and fish. Tag completion is
-not a static list: the shell calls `weave --relative --all` at completion time,
-so it never goes stale as you add extensions.
+not a static list: the shell calls `weave --list` at completion time and takes
+the TAG column, so it never goes stale as you add extensions. (The TAG column
+holds the canonical resolvable tag — `example` for a single-file extension,
+with the `.ts`/`.js` suffix stripped — whereas `weave --relative --all` prints
+relative *paths* like `example.ts`, which do not resolve as tags.)
 
 **bash** (one of):
 

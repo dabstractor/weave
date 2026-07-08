@@ -6,17 +6,27 @@
 #   cp completions/_weave /usr/local/share/zsh/site-functions/_weave
 # then ensure `autoload -U compinit && compinit` in your .zshrc.
 #
-# Tags are derived DYNAMICALLY from disk by calling `weave --relative --all`
-# (weave is manifest-free, PRD §2: there is no sidecar catalog to read).
+# Tags are derived DYNAMICALLY from disk by calling `weave --list` and taking
+# the TAG column (weave is manifest-free, PRD §2: there is no sidecar catalog
+# to read). --list is used (NOT --relative --all) because the TAG column holds
+# the canonical RESOLVABLE tag — for a single-file extension the tag is
+# `example` (the .ts/.js suffix stripped), whereas --relative --all prints the
+# relative PATH `example.ts`, which does NOT resolve as a tag.
 #
 # LOCKSTEP: the flag list below is frozen to `main.go parseArgs()`. If a future
 # task adds/renames a flag there, update this list — and the bash/fish files —
 # identically.
 _weave() {
     local -a tags
-    # Canonical relTags, one per line. ${(f)...} splits on newlines. Errors
-    # swallowed: a missing/broken weave yields an empty list, not a stderr dump.
-    tags=(${(f)"$(weave --relative --all 2>/dev/null)"})
+    # Canonical relTags (the TAG column of `weave --list`), one per line. Only
+    # DATA rows are taken (a leading non-space first column) so wrapped
+    # DESCRIPTION continuation lines — which indent and would otherwise leak
+    # description words into $1 — are skipped. ${(f)...} splits on newlines.
+    # Errors swallowed: a missing/broken weave yields an empty list, not a stderr
+    # dump. (`weave --list` is used, NOT `--relative --all`, because the latter
+    # prints relative PATHS — `example.ts` for a single-file ext — which do not
+    # resolve as tags; the TAG column is the resolvable `example`.)
+    tags=(${(f)"$(weave --list 2>/dev/null | awk 'NR>1 && $0 !~ /^[[:space:]]/ && NF>0 {print $1}')"})
 
     local -a flags=(
         '--version[Print the weave version]'   '-v[Print the weave version]'

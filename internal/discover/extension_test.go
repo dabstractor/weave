@@ -49,7 +49,11 @@ func TestToStringSlice(t *testing.T) {
 		{"any-slice-skips-non-strings", []any{"a", 2, "b", 3.14, true}, []string{"a", "b"}},
 		{"any-slice-empty", []any{}, []string{}}, // present-but-empty -> non-nil empty (len 0)
 		{"string-slice-passthrough", []string{"x", "y"}, []string{"x", "y"}},
-		{"single-string", "solo", []string{"solo"}},
+		// PRD §7.3: a non-array value where an array is expected coerces to []
+		// ("a non-array keywords ⇒ []"). A scalar string is therefore dropped,
+		// NOT wrapped into [s]. lenientAnySlice already does this at decode time;
+		// toStringSlice mirrors it for literal struct construction.
+		{"single-string-dropped", "solo", nil},
 		{"int", 42, nil},
 		{"map", map[string]any{"a": 1}, nil},
 	}

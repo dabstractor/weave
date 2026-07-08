@@ -1,0 +1,37 @@
+{
+  "runId": "66106db7",
+  "agent": "researcher",
+  "task": "Research bash install-script best practices for a Go CLI installer that builds a binary and symlinks it into a PATH dir. I need AUTHORITATIVE references (URLs with section anchors where possible) and precise semantics for each point below. This feeds a PRP for an AI implementer, so be concise and factual. Do NOT write files — return the research as text.\n\n1. `ln -sfn <target> <link>` vs `ln -sf` — what exactly does the `-n` (--no-dereference) flag do, and WHY does it matter when the destination already exists as a symlink-to-a-directory? Give the GNU coreutils `ln` documentation URL and a concrete failure example of `ln -sf` creating a nested dir.\n\n2. `set -euo pipefail` strict mode — what each of `-e`, `-u`, `-o pipefail` does, and known GOTCHAS (`set -e` suppressed inside `if`/`||`/`&&`; `${VAR:-}` needed under `-u`; command-substitution failures masked without pipefail). Give the GNU bash manual URL sections.\n\n3. `command -v go` — why this is the POSIX-correct existence check vs `which` (non-portable, not POSIX). Give the POSIX sh spec URL for `command -v`.\n\n4. Shell detection for PATH setup: `$(basename \"$SHELL\")` and the correct rc-file line for bash (`~/.bashrc`), zsh (`~/.zshrc`), fish (`~/.config/fish/config.fish` + `fish_add_path`). Confirm `fish_add_path` is the idiomatic fish command, give its docs URL. Note the convention: PRINT the line only, never auto-edit rc files (why: intrusive, duplicates on re-run).\n\n5. `go build -trimpath -ldflags \"-s -w -X main.version=<v>\"` — what each flag does: `-trimpath` (reproducible builds, strips $GOPATH/paths from panics), `-s` (strip symbol table), `-w` (strip DWARF), `-X importpath.name=value` (set a string var at link time). Give `go help build` / `go tool link` / Go ldflags documentation URLs.\n\n6. PATH-already-present detection idiom: `case \":${PATH:-}:\" in *\":$TARGET:\"*) ;;` — explain the leading/trailing colon padding trick and why it avoids partial-match false positives (e.g. TARGET=/bin matching /usr/bin).\n\n7. shellcheck — confirm it is the standard bash linter, give its URL (shellcheck / github), and note which SC codes commonly fire on install scripts (e.g. SC2086 unquoted vars, SC2155 declare-and-assign masking).\n\nFor each: precise semantics + authoritative URL + concrete gotcha. Be concise.\n\n---\n**Output:**\nWrite your findings to exactly this path: /home/dustin/projects/weave/.pi-subagents/artifacts/outputs/66106db7/research.md\nThis path is authoritative for this run.\nIgnore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.",
+  "exitCode": 0,
+  "usage": {
+    "input": 2206,
+    "output": 11894,
+    "cacheRead": 192,
+    "cacheWrite": 0,
+    "cost": 0,
+    "turns": 1
+  },
+  "model": "zai/glm-5.2:medium",
+  "attemptedModels": [
+    "zai/glm-5.2:medium"
+  ],
+  "modelAttempts": [
+    {
+      "model": "zai/glm-5.2:medium",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 2206,
+        "output": 11894,
+        "cacheRead": 192,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 1
+      }
+    }
+  ],
+  "durationMs": 205871,
+  "toolCount": 0,
+  "transcriptPath": "/home/dustin/projects/weave/.pi-subagents/artifacts/66106db7_researcher_0_transcript.jsonl",
+  "timestamp": 1783484997391
+}

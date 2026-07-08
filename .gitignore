@@ -3,20 +3,3 @@
 *.test
 *.out
 .DS_Store
-
-# Dependency directories
-node_modules/
-vendor/
-
-# Environment files
-.env
-.env.*
-
-# Editor / IDE
-.idea/
-.vscode/
-*.swp
-*~
-
-# Subagent harness runtime artifacts (transcripts, inputs, outputs)
-.pi-subagents/
