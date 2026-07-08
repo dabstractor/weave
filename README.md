@@ -81,8 +81,13 @@ weave init --store /path/to/store
 On success, the configured store path is the **first line on stdout**, so
 `STORE="$(weave init --store /path | head -1)"` works in scripts. The rest of
 the stdout is the post-setup `check` report; the seeded/adopted status and the
-discovery rule go to stderr. A leading `~` (or a bare `~`) in a typed answer or
-a `--store`/positional path expands to your home directory.
+discovery rule go to stderr.
+
+`weave` does **not** expand `~` itself. If you want a home-relative path,
+leave it unquoted so your shell expands it before `weave` sees it
+(for example `weave init --store ~/extensions`), or pass an absolute path.
+A quoted `~/...` or a `~` typed at the prompt is taken literally, because
+`weave` only absolutizes the value it receives.
 
 ## Shell completions
 
@@ -126,6 +131,14 @@ The canonical one-liner, first:
 
 ```bash
 pi -e "$(weave example)"
+```
+
+To load **only** weave extensions and none of pi's auto-discovered ones, pass
+pi's `--no-extensions` (short `-ne`); explicit `-e` paths still load:
+
+```bash
+# Only the extensions weave resolves; skip pi's own discovery
+pi --no-extensions -e "$(weave example)"
 ```
 
 Everything else, commented:

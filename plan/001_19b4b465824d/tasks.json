@@ -538,7 +538,7 @@
           "type": "Milestone",
           "id": "P1.M6",
           "title": "Example extension, packaging, docs & completions (build order steps 6-8)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Ship the one example extension, verify all §13 acceptance criteria pass, create install.sh, README.md, shell completions, and the final documentation sync.",
           "tasks": [
             {
@@ -650,14 +650,14 @@
               "type": "Task",
               "id": "P1.M6.T5",
               "title": "Sync changeset-level documentation (§5 Mode B)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Final documentation sweep: verify README features, env vars, and overview sections accurately reflect the complete implementation. Catch any documentation drift from the incremental build.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T5.S1",
                   "title": "Final doc sweep — verify README/features/env-vars/overview match implementation",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M6.T4.S1",

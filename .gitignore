@@ -1,6 +1,5 @@
 /weave
 /dist
-/build
 *.test
 *.out
 .DS_Store
