@@ -165,7 +165,7 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "internal/discover — Extension struct + metadata extraction (PRD §7.3)",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Define the Extension type (replaces skilldozer's Skill) and the metadata extraction from package.json (JSON) and leading JSDoc comment. This is the data model that discovery, resolve, search, check, and ui all consume.",
               "subtasks": [
                 {
@@ -189,7 +189,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "JSDoc comment extractor (ExtractJSDoc)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -207,14 +207,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "internal/discover — classify-then-descend walk logic (PRD §7.1)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Implement the core new logic: classifying an on-disk entry as a single-file, dir, or package extension, and the recursion rule that prevents double-counting (don't descend into recognized extension dirs). This is the extensions analog of skilldozer's 'a SKILL.md makes its dir a skill, full stop.'",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "classifyEntry + classify-then-descend recursion rules",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S2"

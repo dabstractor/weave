@@ -18,3 +18,6 @@ vendor/
 .vscode/
 *.swp
 *~
+
+# Subagent harness runtime artifacts (transcripts, inputs, outputs)
+.pi-subagents/
