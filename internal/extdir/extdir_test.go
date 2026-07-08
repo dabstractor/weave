@@ -1,8 +1,10 @@
 package extdir
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +72,24 @@ func writeCfg(t *testing.T, content string) (cfgPath, cfgDir string) {
 	}
 	t.Setenv("weave_CONFIG", cfgPath)
 	return cfgPath, cfgDir
+}
+
+// makeExtension creates <dir>/extensions/<tag>/<tag>.ts (a case-(a) single-file
+// extension per PRD §7.1, recognized by HasExtensionEntry) and returns the
+// extensions/ dir path. The entry file is <tag>.ts, NOT index.ts (index.* are
+// dir markers, case a excludes them) and NOT SKILL.md (skilldozer's marker,
+// unrecognized by weave). Mirrors skilldozer's makeSkill with the rename.
+func makeExtension(t *testing.T, dir, tag string) string {
+	t.Helper()
+	ext := filepath.Join(dir, "extensions")
+	entry := filepath.Join(ext, tag)
+	if err := os.MkdirAll(entry, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", entry, err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, tag+".ts"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write %s.ts: %v", tag, err)
+	}
+	return ext
 }
 
 func TestSourceString(t *testing.T) {
@@ -615,5 +635,207 @@ func TestFindConfigRelativeStoreResolvedAgainstConfigDir(t *testing.T) {
 	}
 	if got != store {
 		t.Errorf("dir=%q; want %q (joined to filepath.Dir(%q))", got, store, cfgPath)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findWalkUpAncestor tests (PRD §8.3 rule 4 testable core). Ported from
+// skilldozer with renames: "skills" -> "extensions", "SKILL.md" -> "<tag>.ts",
+// "makeSkill" -> "makeExtension".
+// ---------------------------------------------------------------------------
+
+// Rule 4: start IS the repo -> extensions at start wins (cwd itself is checked
+// first — the loop body runs before any ascent).
+func TestFindWalkUpAncestorAtStart(t *testing.T) {
+	root := t.TempDir()
+	ext := makeExtension(t, root, "foo")
+	got, found := findWalkUpAncestor(root)
+	if !found {
+		t.Fatalf("findWalkUpAncestor(start=repo): found=false; want true")
+	}
+	if got != ext {
+		t.Errorf("findWalkUpAncestor: dir=%q; want %q", got, ext)
+	}
+}
+
+// Rule 4: extensions is several levels up -> ascent finds it.
+func TestFindWalkUpAncestorDeep(t *testing.T) {
+	root := t.TempDir()
+	ext := makeExtension(t, root, "bar")
+	deep := filepath.Join(root, "a", "b", "c")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, found := findWalkUpAncestor(deep)
+	if !found {
+		t.Fatalf("findWalkUpAncestor(deep): found=false; want true")
+	}
+	if got != ext {
+		t.Errorf("findWalkUpAncestor(deep): dir=%q; want %q", got, ext)
+	}
+}
+
+// Rule 4: a nested entry (extensions/x/y/foo.ts) counts — HasExtensionEntry
+// recurses (case a).
+func TestFindWalkUpAncestorNestedEntry(t *testing.T) {
+	root := t.TempDir()
+	ext := filepath.Join(root, "extensions")
+	if err := os.MkdirAll(filepath.Join(ext, "x", "y"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ext, "x", "y", "foo.ts"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, found := findWalkUpAncestor(root)
+	if !found || got != ext {
+		t.Errorf("findWalkUpAncestor(nested): found=%v dir=%q; want true %q", found, got, ext)
+	}
+}
+
+// Rule 4 CONTRACT: an extensions/ dir that exists but has NO entries is SKIPPED
+// and ascent continues to a higher ancestor that DOES have one. PRD §8.3 qualifies
+// the match with "at least one extension entry".
+func TestFindWalkUpAncestorSkipsEmptyAndContinues(t *testing.T) {
+	root := t.TempDir()
+	// root/a/extensions = EMPTY (no entries); root/extensions/foo/foo.ts = real.
+	if err := os.MkdirAll(filepath.Join(root, "a", "extensions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realExt := makeExtension(t, root, "foo")
+	start := filepath.Join(root, "a", "sub")
+	if err := os.MkdirAll(start, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, found := findWalkUpAncestor(start)
+	if !found {
+		t.Fatalf("findWalkUpAncestor(skip-empty): found=false; want true")
+	}
+	if got != realExt {
+		t.Errorf("findWalkUpAncestor(skip-empty): dir=%q; want the higher real extensions %q", got, realExt)
+	}
+}
+
+// Rule 4: no extensions anywhere up to root -> miss.
+func TestFindWalkUpAncestorNoExtensions(t *testing.T) {
+	if _, found := findWalkUpAncestor(t.TempDir()); found {
+		t.Errorf("findWalkUpAncestor(no extensions): got found=true; want false")
+	}
+}
+
+// Rule 4: an 'extensions' entry that is a regular FILE is skipped (IsDir guard).
+func TestFindWalkUpAncestorExtensionsIsFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "extensions"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := findWalkUpAncestor(root); found {
+		t.Errorf("findWalkUpAncestor(extensions is file): got found=true; want false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findWalkUp tests (rule 4 entry; os.Getwd exercised via t.Chdir).
+// ---------------------------------------------------------------------------
+
+// t.Chdir (Go 1.24+; go.mod says 1.25) changes cwd for the test and restores it
+// on cleanup, so findWalkUp (which calls os.Getwd) is testable without global
+// cwd pollution. Do NOT call t.Parallel() — cwd is process-global.
+
+// Rule 4 via findWalkUp: chdir into a subdir of a temp repo and confirm walk-up
+// resolves to the repo's extensions/, returning SourceWalkUp.
+func TestFindWalkUpFindsAncestor(t *testing.T) {
+	root := t.TempDir()
+	ext := makeExtension(t, root, "example")
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+	got, src, found := findWalkUp()
+	if !found {
+		t.Fatalf("findWalkUp(): found=false; want true")
+	}
+	if src != SourceWalkUp {
+		t.Errorf("findWalkUp(): src=%v; want SourceWalkUp", src)
+	}
+	if got != ext {
+		t.Errorf("findWalkUp(): dir=%q; want %q", got, ext)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Find tests (the public combiner) + ErrNotFound. Ported from skilldozer with
+// renames.
+// ---------------------------------------------------------------------------
+
+// Find: rule 1 wins when weave_EXTENSIONS_DIR is set to an existing dir.
+// Do NOT call t.Parallel() — mutates env.
+func TestFindRuleEnvWins(t *testing.T) {
+	unsetEnvVar(t)
+	dir := t.TempDir()
+	t.Setenv(envVar, dir)
+	got, src, err := Find()
+	if err != nil {
+		t.Fatalf("Find() env set: err=%v; want nil", err)
+	}
+	if src != SourceEnv {
+		t.Errorf("Find() env set: src=%v; want SourceEnv", src)
+	}
+	if want := filepath.Clean(dir); got != want {
+		t.Errorf("Find() env set: dir=%q; want %q", got, want)
+	}
+}
+
+// Find: rule 4 wins when env is unset and cwd has an ancestor extensions/ with
+// an entry. (findSibling deterministically misses in a test because the test
+// binary runs from a temp build dir with no sibling extensions/.)
+// Do NOT call t.Parallel() — mutates env and cwd.
+func TestFindRuleWalkUpWins(t *testing.T) {
+	unsetEnvVar(t)
+	root := t.TempDir()
+	ext := makeExtension(t, root, "example")
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+	got, src, err := Find()
+	if err != nil {
+		t.Fatalf("Find() walk-up: err=%v; want nil", err)
+	}
+	if src != SourceWalkUp {
+		t.Errorf("Find() walk-up: src=%v; want SourceWalkUp", src)
+	}
+	if got != ext {
+		t.Errorf("Find() walk-up: dir=%q; want %q", got, ext)
+	}
+}
+
+// Find: all four rules miss -> ErrNotFound. (chdir into an empty temp dir; the
+// walk ascends to /, which has no extensions/. unsetEnvVar neutralizes
+// weave_CONFIG so a real machine config cannot leak a hit.)
+// Do NOT call t.Parallel() — mutates env and cwd.
+func TestFindAllMissReturnsErrNotFound(t *testing.T) {
+	unsetEnvVar(t)
+	t.Chdir(t.TempDir())
+	got, src, err := Find()
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Find() all-miss: err=%v; want ErrNotFound", err)
+	}
+	if got != "" || src != 0 {
+		t.Errorf("Find() all-miss: got=%q src=%v; want \"\" and 0", got, src)
+	}
+}
+
+// ErrNotFound message carries the user-facing one-line fix (PRD §8.2 / §6.4):
+// exactly 'weave is not configured; run `weave init`' (with literal backticks
+// around the command). The Level 1 grep pins the full string; this test pins
+// the two key substrings.
+func TestErrNotFoundMessageHasFix(t *testing.T) {
+	msg := ErrNotFound.Error()
+	for _, want := range []string{"run", "weave init"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("ErrNotFound message %q missing substring %q", msg, want)
+		}
 	}
 }

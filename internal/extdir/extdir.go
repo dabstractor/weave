@@ -5,12 +5,8 @@
 //  1. weave_EXTENSIONS_DIR env var — override; if set and an existing dir, use it as-is.
 //  2. Config file `store` (PRD §8.1) — the primary, set by `weave init`.  (findConfig)
 //  3. Sibling of the running binary (symlink-aware via os.Executable + EvalSymlinks). (findSibling)
-//  4. Walk up from the current working directory.                          [S3]
-//  5. None ⇒ unconfigured: Find returns ErrNotFound.                       [S3]
-//
-// THIS FILE (P1.M1.T3.S1 + S2) implements rules 1-3 (findEnv, findConfig,
-// findSibling) and the HasExtensionEntry predicate. Rule 4 (findWalkUp) and
-// the Find() combiner are added by S3.
+//  4. Walk up from the current working directory.                          (findWalkUp)
+//  5. None ⇒ unconfigured: Find returns ErrNotFound.
 //
 // findEnv reads weave_EXTENSIONS_DIR; if it names an existing directory the path is
 // returned as-is, only made absolute/clean via filepath.Abs — NEVER through
@@ -203,6 +199,109 @@ func resolveSiblingFromExe(exe string) (dir string, found bool) {
 		return "", false // no existing extensions/ sibling -> rule misses
 	}
 	return candidate, true
+}
+
+// findWalkUpAncestor implements PRD §8.3 rule 4 ascent core. It is factored out of
+// findWalkUp so it can be tested with an arbitrary start dir — os.Getwd is not
+// controllable in a test without t.Chdir, and this core takes start as a parameter.
+//
+// Starting at filepath.Clean(start), for each ancestor cur it computes
+// candidate := cur/extensions and checks whether that is an existing directory
+// that HasExtensionEntry qualifies. PRD §8.3 qualifies the match with "at least
+// one extension entry": an extensions/ dir that exists but has NO entries is
+// SKIPPED and ascent continues. The START dir is checked FIRST (the loop body
+// runs before any ascent). The loop terminates via parent == cur, which is how
+// filepath.Dir signals the filesystem root (filepath.Dir("/") == "/"); a depth
+// counter or HasPrefix root check is NOT used.
+//
+// weave-vs-skilldozer: ports skilldozer's findWalkUpAncestor body VERBATIM with
+// two renames — the sibling dir literal changes from skills to extensions, and
+// the predicate HasSkillMD → HasExtensionEntry (the S1 predicate that recognizes the
+// three PRD §7.1 entry kinds at any depth).
+func findWalkUpAncestor(start string) (dir string, found bool) {
+	cur := filepath.Clean(start)
+	for {
+		candidate := filepath.Join(cur, "extensions") // weave: extensions dir, not skills
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			if HasExtensionEntry(candidate) { // weave: HasExtensionEntry not HasSkillMD
+				return candidate, true
+			}
+			// extensions/ exists here but has no entries -> keep ascending.
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", false // reached filesystem root, no match
+		}
+		cur = parent
+	}
+}
+
+// findWalkUp implements PRD §8.3 rule 4 — the catch-all for `go run` / dev
+// workflows where the binary is in a temp build dir and rules 1-3 all miss. It
+// is a thin entry that asks the OS for the current working directory
+// (os.Getwd) and delegates the ascent to findWalkUpAncestor. The testable core
+// lives there because os.Getwd is not controllable in tests (use t.Chdir).
+//
+// Returns (dir, SourceWalkUp, true) on a hit; ("", 0, false) on a miss or when
+// os.Getwd is unresolvable. Never errors (locked per-rule shape — a miss is a
+// fall-through, not a hard error).
+func findWalkUp() (dir string, src Source, found bool) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", 0, false // cwd unresolvable -> rule misses
+	}
+	d, ok := findWalkUpAncestor(cwd)
+	if !ok {
+		return "", 0, false
+	}
+	return d, SourceWalkUp, true
+}
+
+// ErrNotFound is returned by Find when every PRD §8.3 rule misses (the system
+// is unconfigured). Its message is the user-facing one-line fix, pinned verbatim
+// by PRD §8.2 / §6.4: main prints err.Error() to stderr with NO wrapping or
+// prefix and exits 1, so `pi -e "$(weave x)"` fails loudly inside command
+// substitution instead of hanging. The literal backticks around `weave init`
+// are part of the message (shell users copy-paste the command).
+//
+// PRD §8.2 prompt safety: the bare `weave <tag>` path NEVER prompts. Find
+// returns ErrNotFound and lets the caller (main) decide; no isatty / auto-init
+// logic lives in this package. errors.Is(err, ErrNotFound) works because this
+// is a sentinel created by errors.New.
+var ErrNotFound = errors.New("weave is not configured; run `weave init`")
+
+// Find is the single public entrypoint that locates the extensions directory.
+// It implements the PRD §8.3 first-hit-wins priority order, trying each rule in
+// turn and returning the first hit:
+//
+//  1. weave_EXTENSIONS_DIR env var (findEnv)
+//  2. config file `store` key (findConfig)
+//  3. sibling of the running binary (findSibling)
+//  4. walk up from cwd (findWalkUp)
+//  5. None ⇒ unconfigured: returns ("", 0, ErrNotFound)
+//
+// Each rule helper already returns an absolute path on a hit, so the returned
+// dir is always absolute (the absDir invariant). Consumed by main.run
+// (P1.M1.T4) and discover.Index (P1.M2.T3).
+//
+// PRD §8.2 prompt safety: Find NEVER prompts and NEVER auto-initializes. The
+// unconfigured case returns ErrNotFound and the caller decides what to do —
+// main prints the message to stderr and exits 1. The ONLY place weave prompts
+// is `weave init` (P1.M4.T4).
+func Find() (dir string, src Source, err error) {
+	if d, s, ok := findEnv(); ok {
+		return d, s, nil
+	}
+	if d, s, ok := findConfig(); ok { // PRD §8.3 priority #2 (S2)
+		return d, s, nil
+	}
+	if d, s, ok := findSibling(); ok { // PRD §8.3 priority #3 (S2)
+		return d, s, nil
+	}
+	if d, s, ok := findWalkUp(); ok {
+		return d, s, nil
+	}
+	return "", 0, ErrNotFound
 }
 
 // errExtensionFound is a sentinel error used to short-circuit filepath.WalkDir
