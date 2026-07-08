@@ -42,14 +42,14 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "internal/config — settings file (PRD §8.1, hand-rolled YAML)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Implement the settings sidecar that records ONLY the store location. Unlike skilldozer (which used yaml.v3), weave hand-rolls a trivial parser for the one key `store:` — zero dependencies. Includes Path() (config file location) and DefaultStore() (XDG data home default).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "File struct + hand-rolled Load/Save + Path() + DefaultStore()",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -74,7 +74,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S1",
                   "title": "Source type + env-var resolution (rule 1) + HasExtensionEntry predicate",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"
